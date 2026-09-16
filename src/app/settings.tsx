@@ -1,10 +1,17 @@
 import React, { useState, useCallback } from 'react';
-import { StyleSheet, View, TextInput, TouchableOpacity, ScrollView, Modal, Alert, Platform } from 'react-native';
+import { StyleSheet, View, TextInput, TouchableOpacity, ScrollView, Modal, Alert, Platform, useColorScheme } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
 
+const palettes = {
+  light: { bg: '#F8F9FA', card: '#FFFFFF', border: '#E5E5EA', sub: '#8E8E93', inputBg: '#FFFFFF', accent: '#007AFF', accentSoft: '#E8F1FF', danger: '#E53E3E', mask: 'rgba(0,0,0,0.4)', panel: '#FFFFFF', cancelBg: '#F0F0F0', cancelText: '#333333' },
+  dark: { bg: '#000000', card: '#1C1C1E', border: '#2C2C2E', sub: '#8E8E93', inputBg: '#2C2C2E', accent: '#0A84FF', accentSoft: '#1A3A5C', danger: '#FF6B6B', mask: 'rgba(0,0,0,0.6)', panel: '#1C1C1E', cancelBg: '#2C2C2E', cancelText: '#E5E5EA' },
+};
+
 export default function SettingsScreen() {
+  const scheme = useColorScheme();
+  const C = palettes[scheme === 'dark' ? 'dark' : 'light'];
   const [config, setConfig] = useState<any>(null);
   const [showRecharge, setShowRecharge] = useState(false);
   const [showAddApi, setShowAddApi] = useState(false);
@@ -13,7 +20,6 @@ export default function SettingsScreen() {
   const [apiForm, setApiForm] = useState({ name: '', endpoint: '', apiKey: '' });
   const router = useRouter();
 
-  // 每次切到该 Tab 时重新读取配置并刷新余额
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -43,14 +49,30 @@ export default function SettingsScreen() {
 
   if (!config?.session_token) {
     return (
-      <View style={[styles.container, styles.center]}>
+      <View style={[styles.container, styles.center, { backgroundColor: C.bg }]}>
         <ThemedText>尚未登录</ThemedText>
-        <TouchableOpacity style={styles.btn} onPress={() => router.push('/login')}>
+        <TouchableOpacity style={[styles.btn, { backgroundColor: C.accent }]} onPress={() => router.push('/login')}>
           <ThemedText style={styles.btnText}>去登录</ThemedText>
         </TouchableOpacity>
       </View>
     );
   }
+
+  const doLogout = async () => {
+    await api.clearConfig();
+    router.replace('/login');
+  };
+
+  const handleLogout = () => {
+    if (Platform.OS === 'web') {
+      if (window.confirm('确定要退出当前账号吗？')) doLogout();
+    } else {
+      Alert.alert('退出登录', '确定要退出当前账号吗？', [
+        { text: '取消', style: 'cancel' },
+        { text: '确定', style: 'destructive', onPress: doLogout },
+      ]);
+    }
+  };
 
   const handleRecharge = async () => {
     if (!voucher.trim()) { alert('请输入卡密'); return; }
@@ -98,23 +120,6 @@ export default function SettingsScreen() {
     }
   };
 
-  const doLogout = async () => {
-    await api.clearConfig();
-    router.replace('/login');
-  };
-
-  const handleLogout = () => {
-    // Web 端 Alert.alert 不支持按钮回调，需用 window.confirm
-    if (Platform.OS === 'web') {
-      if (window.confirm('确定要退出当前账号吗？')) doLogout();
-    } else {
-      Alert.alert('退出登录', '确定要退出当前账号吗？', [
-        { text: '取消', style: 'cancel' },
-        { text: '确定', style: 'destructive', onPress: doLogout },
-      ]);
-    }
-  };
-
   const removeApi = (idx: number) => {
     const newApis = (config.third_party_apis || []).filter((_: any, i: number) => i !== idx);
     const newConfig = { ...config, third_party_apis: newApis };
@@ -123,33 +128,33 @@ export default function SettingsScreen() {
   };
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView style={[styles.container, { backgroundColor: C.bg }]}>
       {/* 账户信息 */}
       <View style={styles.section}>
         <View style={styles.row}>
           <ThemedText type="subtitle">{config.username || '已登录'}</ThemedText>
-          <TouchableOpacity onPress={handleLogout}><ThemedText style={styles.link}>退出登录</ThemedText></TouchableOpacity>
+          <TouchableOpacity onPress={handleLogout}><ThemedText style={{ color: C.danger }}>退出登录</ThemedText></TouchableOpacity>
         </View>
         <View style={styles.stats}>
-          <View style={styles.statBox}>
-            <ThemedText>余额</ThemedText>
+          <View style={[styles.statBox, { backgroundColor: C.card, borderColor: C.border }]}>
+            <ThemedText style={styles.statLabel}>余额</ThemedText>
             <ThemedText type="subtitle">${Number(config.balance ?? 0).toFixed(2)}</ThemedText>
           </View>
-          <View style={styles.statBox}>
-            <ThemedText>今日消耗</ThemedText>
-            <ThemedText type="subtitle">{todayUsage?.tokens?.toLocaleString() || 0}</ThemedText>
-            <ThemedText style={styles.hint}>{todayUsage?.count || 0} 次对话</ThemedText>
+          <View style={[styles.statBox, { backgroundColor: C.card, borderColor: C.border }]}>
+            <ThemedText style={styles.statLabel}>今日消耗</ThemedText>
+            <ThemedText type="subtitle">{(todayUsage?.tokens || 0).toLocaleString()}</ThemedText>
+            <ThemedText style={[styles.hint, { color: C.sub }]}>{todayUsage?.count || 0} 次对话</ThemedText>
           </View>
-          <View style={styles.statBox}>
-            <ThemedText>累计消耗</ThemedText>
+          <View style={[styles.statBox, { backgroundColor: C.card, borderColor: C.border }]}>
+            <ThemedText style={styles.statLabel}>累计消耗</ThemedText>
             <ThemedText type="subtitle">{(config.usage?.total || 0).toLocaleString()}</ThemedText>
-            <ThemedText style={styles.hint}>{config.usage?.count || 0} 次对话</ThemedText>
+            <ThemedText style={[styles.hint, { color: C.sub }]}>{config.usage?.count || 0} 次对话</ThemedText>
           </View>
         </View>
       </View>
 
       {/* 充值入口 */}
-      <TouchableOpacity style={styles.btn} onPress={() => setShowRecharge(true)}>
+      <TouchableOpacity style={[styles.btn, { backgroundColor: C.accent }]} onPress={() => setShowRecharge(true)}>
         <ThemedText style={styles.btnText}>💵 充值</ThemedText>
       </TouchableOpacity>
 
@@ -158,20 +163,20 @@ export default function SettingsScreen() {
         <View style={styles.row}>
           <ThemedText type="subtitle">第三方 API</ThemedText>
           <TouchableOpacity onPress={() => setShowAddApi(true)}>
-            <ThemedText style={styles.link}>+ 添加</ThemedText>
+            <ThemedText style={{ color: C.accent }}>＋ 添加</ThemedText>
           </TouchableOpacity>
         </View>
         {(config.third_party_apis || []).length === 0 ? (
-          <ThemedText style={styles.hint}>暂无第三方 API，添加后自动获取模型列表</ThemedText>
+          <ThemedText style={[styles.hint, { color: C.sub }]}>暂无第三方 API，添加后自动获取模型列表</ThemedText>
         ) : (
           (config.third_party_apis || []).map((tp: any, idx: number) => (
-            <View key={idx} style={styles.apiItem}>
+            <View key={idx} style={[styles.apiItem, { borderBottomColor: C.border }]}>
               <View style={{ flex: 1 }}>
                 <ThemedText>{tp.name || '未命名 API'}</ThemedText>
-                <ThemedText style={styles.hint}>{tp.endpoint} · {(tp.models || []).length} 个模型</ThemedText>
+                <ThemedText style={[styles.hint, { color: C.sub }]}>{tp.endpoint} · {(tp.models || []).length} 个模型</ThemedText>
               </View>
               <TouchableOpacity onPress={() => removeApi(idx)}>
-                <ThemedText style={{ color: '#E53E3E' }}>删除</ThemedText>
+                <ThemedText style={{ color: C.danger }}>删除</ThemedText>
               </TouchableOpacity>
             </View>
           ))
@@ -180,15 +185,15 @@ export default function SettingsScreen() {
 
       {/* 充值弹窗 */}
       <Modal visible={showRecharge} animationType="slide" transparent>
-        <View style={styles.modalMask}>
-          <View style={styles.modal}>
+        <View style={[styles.modalMask, { backgroundColor: C.mask }]}>
+          <View style={[styles.modal, { backgroundColor: C.panel }]}>
             <ThemedText type="subtitle">充值</ThemedText>
-            <TextInput style={styles.input} placeholder="请输入充值卡密" value={voucher} onChangeText={setVoucher} />
+            <TextInput style={[styles.input, { backgroundColor: C.inputBg, borderColor: C.border, color: C.cancelText }]} placeholder="请输入充值卡密" placeholderTextColor={C.sub} value={voucher} onChangeText={setVoucher} />
             <View style={styles.modalBtns}>
-              <TouchableOpacity style={[styles.modalBtn, styles.modalBtnCancel]} onPress={() => { setVoucher(''); setShowRecharge(false); }}>
-                <ThemedText>取消</ThemedText>
+              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: C.cancelBg }]} onPress={() => { setVoucher(''); setShowRecharge(false); }}>
+                <ThemedText style={{ color: C.cancelText }}>取消</ThemedText>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalBtn, styles.modalBtnOk]} onPress={handleRecharge} disabled={busy}>
+              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: C.accent }]} onPress={handleRecharge} disabled={busy}>
                 <ThemedText style={styles.btnText}>{busy ? '处理中...' : '确认'}</ThemedText>
               </TouchableOpacity>
             </View>
@@ -198,17 +203,17 @@ export default function SettingsScreen() {
 
       {/* 添加 API 弹窗 */}
       <Modal visible={showAddApi} animationType="slide" transparent>
-        <View style={styles.modalMask}>
-          <View style={styles.modal}>
+        <View style={[styles.modalMask, { backgroundColor: C.mask }]}>
+          <View style={[styles.modal, { backgroundColor: C.panel }]}>
             <ThemedText type="subtitle">添加第三方 API</ThemedText>
-            <TextInput style={styles.input} placeholder="API 别名（可选，如 OpenAI）" onChangeText={(v) => setApiForm({ ...apiForm, name: v })} />
-            <TextInput style={styles.input} placeholder="Endpoint（如 https://api.openai.com）" autoCapitalize="none" onChangeText={(v) => setApiForm({ ...apiForm, endpoint: v })} />
-            <TextInput style={styles.input} placeholder="API Key（sk-...）" autoCapitalize="none" secureTextEntry onChangeText={(v) => setApiForm({ ...apiForm, apiKey: v })} />
+            <TextInput style={[styles.input, { backgroundColor: C.inputBg, borderColor: C.border, color: C.cancelText }]} placeholder="API 别名（可选，如 OpenAI）" placeholderTextColor={C.sub} onChangeText={(v) => setApiForm({ ...apiForm, name: v })} />
+            <TextInput style={[styles.input, { backgroundColor: C.inputBg, borderColor: C.border, color: C.cancelText }]} placeholder="Endpoint（如 https://api.openai.com）" placeholderTextColor={C.sub} autoCapitalize="none" onChangeText={(v) => setApiForm({ ...apiForm, endpoint: v })} />
+            <TextInput style={[styles.input, { backgroundColor: C.inputBg, borderColor: C.border, color: C.cancelText }]} placeholder="API Key（sk-...）" placeholderTextColor={C.sub} autoCapitalize="none" secureTextEntry onChangeText={(v) => setApiForm({ ...apiForm, apiKey: v })} />
             <View style={styles.modalBtns}>
-              <TouchableOpacity style={[styles.modalBtn, styles.modalBtnCancel]} onPress={() => setShowAddApi(false)}>
-                <ThemedText>取消</ThemedText>
+              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: C.cancelBg }]} onPress={() => setShowAddApi(false)}>
+                <ThemedText style={{ color: C.cancelText }}>取消</ThemedText>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalBtn, styles.modalBtnOk]} onPress={handleAddApi} disabled={busy}>
+              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: C.accent }]} onPress={handleAddApi} disabled={busy}>
                 <ThemedText style={styles.btnText}>{busy ? '获取中...' : '保存并获取模型'}</ThemedText>
               </TouchableOpacity>
             </View>
@@ -223,19 +228,17 @@ const styles = StyleSheet.create({
   container: { flex: 1, padding: 16 },
   center: { justifyContent: 'center', alignItems: 'center', gap: 16 },
   section: { marginVertical: 16 },
-  stats: { flexDirection: 'row', justifyContent: 'space-around', marginVertical: 10 },
-  statBox: { alignItems: 'center', gap: 4 },
-  btn: { backgroundColor: '#007AFF', padding: 15, borderRadius: 8, alignItems: 'center', marginVertical: 10 },
+  stats: { flexDirection: 'row', gap: 10, marginVertical: 10 },
+  statBox: { flex: 1, alignItems: 'center', gap: 4, paddingVertical: 12, borderRadius: 12, borderWidth: 1 },
+  statLabel: { fontSize: 12 },
+  btn: { padding: 15, borderRadius: 12, alignItems: 'center', marginVertical: 10 },
   btnText: { color: '#FFF' },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  link: { color: '#007AFF' },
-  hint: { color: '#999', fontSize: 12, marginTop: 2 },
-  apiItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#EEE' },
-  modalMask: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: 24 },
-  modal: { backgroundColor: '#FFF', borderRadius: 12, padding: 20, gap: 10 },
+  hint: { fontSize: 12, marginTop: 2 },
+  apiItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth },
+  modalMask: { flex: 1, justifyContent: 'center', padding: 24 },
+  modal: { borderRadius: 16, padding: 20, gap: 10 },
   modalBtns: { flexDirection: 'row', gap: 10 },
-  modalBtn: { flex: 1, padding: 12, borderRadius: 8, alignItems: 'center' },
-  modalBtnCancel: { backgroundColor: '#F0F0F0' },
-  modalBtnOk: { backgroundColor: '#007AFF' },
-  input: { borderWidth: 1, borderColor: '#DDD', padding: 10, borderRadius: 8 },
+  modalBtn: { flex: 1, padding: 12, borderRadius: 10, alignItems: 'center' },
+  input: { borderWidth: 1, padding: 10, borderRadius: 10 },
 });

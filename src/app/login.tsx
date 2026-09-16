@@ -1,10 +1,17 @@
 import React, { useState } from 'react';
-import { StyleSheet, View, TextInput, TouchableOpacity, SafeAreaView, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, TextInput, TouchableOpacity, SafeAreaView, ActivityIndicator, useColorScheme } from 'react-native';
 import { useRouter } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
 
+const palettes = {
+  light: { bg: '#F8F9FA', card: '#FFFFFF', border: '#DDD', inputText: '#000', sub: '#8E8E93', accent: '#007AFF' },
+  dark: { bg: '#000000', card: '#1C1C1E', border: '#3A3A3C', inputText: '#FFF', sub: '#8E8E93', accent: '#0A84FF' },
+};
+
 export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
+  const scheme = useColorScheme();
+  const C = palettes[scheme === 'dark' ? 'dark' : 'light'];
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -65,12 +72,25 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.card}>
+    <SafeAreaView style={[styles.container, { backgroundColor: C.bg }]}>
+      <View style={[styles.card, { backgroundColor: C.card, borderColor: C.border, borderWidth: 1 }]}>
         <ThemedText type="title" style={styles.title}>Frapi AI</ThemedText>
-        <TextInput style={styles.input} placeholder="用户名" value={username} onChangeText={setUsername} />
-        <TextInput style={styles.input} placeholder="密码" value={password} onChangeText={setPassword} secureTextEntry />
-        <TouchableOpacity style={styles.btn} onPress={handleLogin} disabled={loading}>
+        <TextInput
+          style={[styles.input, { borderColor: C.border, color: C.inputText, backgroundColor: C.bg }]}
+          placeholder="用户名"
+          placeholderTextColor={C.sub}
+          value={username}
+          onChangeText={setUsername}
+        />
+        <TextInput
+          style={[styles.input, { borderColor: C.border, color: C.inputText, backgroundColor: C.bg }]}
+          placeholder="密码"
+          placeholderTextColor={C.sub}
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+        />
+        <TouchableOpacity style={[styles.btn, { backgroundColor: C.accent }]} onPress={handleLogin} disabled={loading}>
           {loading ? <ActivityIndicator color="#FFF" /> : <ThemedText style={styles.btnText}>登录</ThemedText>}
         </TouchableOpacity>
       </View>
@@ -80,9 +100,9 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
 
 const styles = StyleSheet.create({
   container: { flex: 1, justifyContent: 'center', padding: 20 },
-  card: { padding: 20, borderRadius: 15, backgroundColor: '#FFF' },
+  card: { padding: 20, borderRadius: 16 },
   title: { textAlign: 'center', marginBottom: 20 },
-  input: { borderWidth: 1, borderColor: '#DDD', borderRadius: 8, padding: 12, marginBottom: 15 },
-  btn: { backgroundColor: '#007AFF', padding: 15, borderRadius: 8, alignItems: 'center' },
+  input: { borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 15 },
+  btn: { padding: 15, borderRadius: 10, alignItems: 'center' },
   btnText: { color: '#FFF', fontWeight: '600' }
 });

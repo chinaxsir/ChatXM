@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { StyleSheet, View, Text, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, SafeAreaView, Modal, Alert, Image } from 'react-native';
+import { StyleSheet, View, Text, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, SafeAreaView, Modal, Alert, Image, useColorScheme } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
@@ -12,19 +12,25 @@ const BUILTIN_ENDPOINT = 'https://api.frapi.kdns.fr';
 
 type Msg = { role: string; content: string; image?: string | null };
 
+const palettes = {
+  light: { bg: '#F8F9FA', headerBg: '#FFFFFF', border: '#E5E5EA', sub: '#8E8E93', btnBg: '#F0F2F5', btnText: '#333333', accent: '#007AFF', accentSoft: '#E8F1FF', inputBg: '#F0F0F0', aiBubble: '#E9E9EB', aiText: '#000000', panelBg: '#FFFFFF', danger: '#E53E3E' },
+  dark: { bg: '#000000', headerBg: '#1C1C1E', border: '#2C2C2E', sub: '#8E8E93', btnBg: '#2C2C2E', btnText: '#E5E5EA', accent: '#0A84FF', accentSoft: '#1A3A5C', inputBg: '#1C1C1E', aiBubble: '#2C2C2E', aiText: '#FFFFFF', panelBg: '#1C1C1E', danger: '#FF6B6B' },
+};
+
 export default function ChatScreen() {
+  const scheme = useColorScheme();
+  const C = palettes[scheme === 'dark' ? 'dark' : 'light'];
   const [config, setConfig] = useState<any>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [sessionId, setSessionId] = useState('default_session');
   const [input, setInput] = useState('');
   const [model, setModel] = useState('frapi');
-  const [image, setImage] = useState<string | null>(null); // data URL 待发送
+  const [image, setImage] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [sessions, setSessions] = useState<any[]>([]);
   const listRef = useRef<FlatList<Msg>>(null);
 
-  // 页面聚焦时重载配置（支持退出重登）
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -38,7 +44,6 @@ export default function ChatScreen() {
     }, [])
   );
 
-  // 切换会话时加载对应历史
   useEffect(() => {
     let active = true;
     (async () => {
@@ -81,7 +86,6 @@ export default function ChatScreen() {
     }
   };
 
-  // 选择图片（拍照或相册），压缩后转为 data URL
   const pickImage = async (useCamera: boolean) => {
     try {
       const options: any = { mediaTypes: ['images'], quality: 0.6, base64: true, allowsEditing: false };
@@ -96,7 +100,6 @@ export default function ChatScreen() {
       if (result.canceled || !result.assets?.[0]) return;
       const asset: any = result.assets[0];
 
-      // 压缩到宽 1024，控制 base64 体积
       let dataUrl = '';
       try {
         const rendered = await ImageManipulator.manipulate(asset.uri).resize({ width: 1024 }).renderAsync();
@@ -154,7 +157,6 @@ export default function ChatScreen() {
         await api.saveHistory(sessionId, updatedMessages);
         setMessages(updatedMessages);
 
-        // 累计 Token 消耗统计（总计 + 按天）
         const usage: any = response.usage || {};
         const day = new Date().toISOString().slice(0, 10);
         const u = config.usage || { total: 0, prompt: 0, completion: 0, count: 0, daily: {} as any };
@@ -193,15 +195,14 @@ export default function ChatScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* 顶栏：历史 | 模型选择 | 新对话 */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.headerBtn} onPress={() => { loadSessions(); setShowHistory(true); }}>
-          <ThemedText style={styles.headerBtnText}>☰ 历史</ThemedText>
+    <SafeAreaView style={[styles.container, { backgroundColor: C.bg }]}>
+      <View style={[styles.header, { backgroundColor: C.headerBg, borderBottomColor: C.border }]}>
+        <TouchableOpacity style={[styles.headerBtn, { backgroundColor: C.btnBg }]} onPress={() => { loadSessions(); setShowHistory(true); }}>
+          <ThemedText style={[styles.headerBtnText, { color: C.btnText }]}>☰ 历史</ThemedText>
         </TouchableOpacity>
         <View style={styles.modelPicker}>
           <Picker selectedValue={model} onValueChange={(item) => setModel(item)} style={styles.picker}>
-            <Picker.Item label="frapi (智能选择)" value="frapi" />
+            <Picker.Item label="官方 API" value="frapi" />
             {(config?.third_party_apis || []).map((tp: any, idx: number) =>
               (tp.models || []).map((m: string) => (
                 <Picker.Item key={`tp-${idx}-${m}`} label={`${tp.name || 'API'} · ${m}`} value={`tp:${idx}:${m}`} />
@@ -209,8 +210,8 @@ export default function ChatScreen() {
             )}
           </Picker>
         </View>
-        <TouchableOpacity style={[styles.headerBtn, styles.newChatBtn]} onPress={newChat}>
-          <ThemedText style={styles.newChatBtnText}>＋ 新对话</ThemedText>
+        <TouchableOpacity style={[styles.headerBtn, { backgroundColor: C.accentSoft }]} onPress={newChat}>
+          <ThemedText style={[styles.newChatBtnText, { color: C.accent }]}>＋ 新对话</ThemedText>
         </TouchableOpacity>
       </View>
 
@@ -222,10 +223,12 @@ export default function ChatScreen() {
           contentContainerStyle={styles.listContent}
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
           renderItem={({ item }) => (
-            <View style={[styles.msgBubble, item.role === 'user' ? styles.userBubble : styles.aiBubble]}>
+            <View style={[styles.msgBubble, item.role === 'user'
+              ? { backgroundColor: C.accent }
+              : { backgroundColor: C.aiBubble }]}>
               {!!item.image && <Image source={{ uri: item.image }} style={styles.msgImage} resizeMode="cover" />}
               {!!item.content && (
-                <ThemedText style={item.role === 'user' ? styles.userText : styles.aiText}>
+                <ThemedText style={[styles.msgText, { color: item.role === 'user' ? '#FFFFFF' : C.aiText }]}>
                   {item.content}
                 </ThemedText>
               )}
@@ -233,9 +236,8 @@ export default function ChatScreen() {
           )}
         />
 
-        {/* 待发送图片预览 */}
         {!!image && (
-          <View style={styles.previewBar}>
+          <View style={[styles.previewBar, { backgroundColor: C.headerBg }]}>
             <Image source={{ uri: image }} style={styles.previewThumb} resizeMode="cover" />
             <TouchableOpacity style={styles.previewRemove} onPress={() => setImage(null)}>
               <Text style={styles.previewRemoveText}>✕</Text>
@@ -243,8 +245,7 @@ export default function ChatScreen() {
           </View>
         )}
 
-        {/* 输入区：拍照 | 相册 | 输入框 | 发送 */}
-        <View style={styles.inputBar}>
+        <View style={[styles.inputBar, { backgroundColor: C.headerBg, borderTopColor: C.border }]}>
           {Platform.OS !== 'web' && (
             <TouchableOpacity style={styles.attachBtn} onPress={() => pickImage(true)}>
               <Text style={styles.attachIcon}>📷</Text>
@@ -254,48 +255,51 @@ export default function ChatScreen() {
             <Text style={styles.attachIcon}>🖼️</Text>
           </TouchableOpacity>
           <TextInput
-            style={styles.input}
+            style={[styles.input, { backgroundColor: C.inputBg, color: C.aiText }]}
             value={input}
             onChangeText={setInput}
             placeholder="输入消息..."
-            placeholderTextColor="#999"
+            placeholderTextColor={C.sub}
             multiline
           />
-          <TouchableOpacity style={[styles.sendBtn, sending && styles.sendBtnDisabled]} onPress={sendMessage} disabled={sending}>
+          <TouchableOpacity
+            style={[styles.sendBtn, { backgroundColor: sending ? C.sub : C.accent }]}
+            onPress={sendMessage}
+            disabled={sending}
+          >
             <ThemedText style={styles.sendText}>{sending ? '...' : '发送'}</ThemedText>
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
 
-      {/* 历史会话弹窗 */}
       <Modal visible={showHistory} animationType="slide" transparent onRequestClose={() => setShowHistory(false)}>
         <View style={styles.modalMask}>
-          <View style={styles.historyPanel}>
+          <View style={[styles.historyPanel, { backgroundColor: C.panelBg }]}>
             <View style={styles.historyHeader}>
               <ThemedText type="subtitle">历史会话</ThemedText>
               <View style={{ flexDirection: 'row', gap: 16 }}>
-                <TouchableOpacity onPress={newChat}><ThemedText style={styles.link}>＋ 新对话</ThemedText></TouchableOpacity>
-                <TouchableOpacity onPress={() => setShowHistory(false)}><ThemedText style={styles.hint}>关闭</ThemedText></TouchableOpacity>
+                <TouchableOpacity onPress={newChat}><ThemedText style={{ color: C.accent }}>＋ 新对话</ThemedText></TouchableOpacity>
+                <TouchableOpacity onPress={() => setShowHistory(false)}><ThemedText style={{ color: C.sub }}>关闭</ThemedText></TouchableOpacity>
               </View>
             </View>
             {sessions.length === 0 ? (
-              <ThemedText style={styles.hint}>暂无历史会话</ThemedText>
+              <ThemedText style={{ color: C.sub }}>暂无历史会话</ThemedText>
             ) : (
               <FlatList
                 data={sessions}
                 keyExtractor={(item) => item.id}
                 renderItem={({ item }) => (
-                  <View style={styles.sessionItem}>
+                  <View style={[styles.sessionItem, { borderBottomColor: C.border }]}>
                     <TouchableOpacity style={{ flex: 1 }} onPress={() => openSession(item.id)}>
-                      <ThemedText numberOfLines={1} style={item.id === sessionId ? styles.sessionActive : undefined}>
+                      <ThemedText numberOfLines={1} style={item.id === sessionId ? { color: C.accent, fontWeight: '600' } : undefined}>
                         {item.title}{item.id === sessionId ? ' （当前）' : ''}
                       </ThemedText>
                       {!!item.updatedAt && (
-                        <ThemedText style={styles.hint}>{new Date(item.updatedAt).toLocaleString()}</ThemedText>
+                        <ThemedText style={{ color: C.sub, fontSize: 12 }}>{new Date(item.updatedAt).toLocaleString()}</ThemedText>
                       )}
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => removeSession(item.id)}>
-                      <ThemedText style={styles.deleteText}>删除</ThemedText>
+                      <ThemedText style={{ color: C.danger, fontSize: 13 }}>删除</ThemedText>
                     </TouchableOpacity>
                   </View>
                 )}
@@ -309,39 +313,30 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8F9FA' },
+  container: { flex: 1 },
   content: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 6, backgroundColor: '#FFF', borderBottomWidth: 1, borderBottomColor: '#EEE', gap: 6 },
-  headerBtn: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: '#F0F2F5' },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 6, borderBottomWidth: 1, gap: 6 },
+  headerBtn: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8 },
   headerBtnText: { fontSize: 13 },
-  newChatBtn: { backgroundColor: '#E8F1FF' },
-  newChatBtnText: { fontSize: 13, color: '#007AFF', fontWeight: '600' },
+  newChatBtnText: { fontSize: 13, fontWeight: '600' },
   modelPicker: { flex: 1, height: 40 },
   picker: { flex: 1 },
   listContent: { padding: 16 },
   msgBubble: { padding: 12, borderRadius: 18, marginVertical: 6, maxWidth: '85%' },
-  userBubble: { alignSelf: 'flex-end', backgroundColor: '#007AFF' },
-  aiBubble: { alignSelf: 'flex-start', backgroundColor: '#E5E5EA' },
   msgImage: { width: 200, height: 200, borderRadius: 12, marginBottom: 6 },
-  userText: { color: '#FFF' },
-  aiText: { color: '#000' },
-  previewBar: { flexDirection: 'row', paddingHorizontal: 12, paddingTop: 8, backgroundColor: '#FFF' },
+  msgText: { fontSize: 15, lineHeight: 21 },
+  previewBar: { flexDirection: 'row', paddingHorizontal: 12, paddingTop: 8 },
   previewThumb: { width: 64, height: 64, borderRadius: 8 },
   previewRemove: { marginLeft: 8, width: 22, height: 22, borderRadius: 11, backgroundColor: '#E53E3E', alignItems: 'center', justifyContent: 'center', alignSelf: 'flex-start' },
   previewRemoveText: { color: '#FFF', fontSize: 12, lineHeight: 14 },
-  inputBar: { flexDirection: 'row', alignItems: 'flex-end', padding: 10, backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: '#EEE', gap: 6 },
+  inputBar: { flexDirection: 'row', alignItems: 'flex-end', padding: 10, borderTopWidth: 1, gap: 6 },
   attachBtn: { width: 38, height: 40, justifyContent: 'center', alignItems: 'center' },
   attachIcon: { fontSize: 22 },
-  input: { flex: 1, minHeight: 40, maxHeight: 100, backgroundColor: '#F0F0F0', borderRadius: 20, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10, fontSize: 16 },
-  sendBtn: { marginLeft: 2, height: 40, justifyContent: 'center', paddingHorizontal: 16, borderRadius: 20, backgroundColor: '#007AFF' },
-  sendBtnDisabled: { backgroundColor: '#A0C4FF' },
+  input: { flex: 1, minHeight: 40, maxHeight: 100, borderRadius: 20, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10, fontSize: 16 },
+  sendBtn: { marginLeft: 2, height: 40, justifyContent: 'center', paddingHorizontal: 16, borderRadius: 20 },
   sendText: { color: '#FFF', fontWeight: '600' },
-  modalMask: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
-  historyPanel: { backgroundColor: '#FFF', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16, maxHeight: '70%' },
+  modalMask: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  historyPanel: { borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16, maxHeight: '70%' },
   historyHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  link: { color: '#007AFF' },
-  hint: { color: '#999', fontSize: 12 },
-  sessionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#EEE', gap: 8 },
-  sessionActive: { color: '#007AFF', fontWeight: '600' },
-  deleteText: { color: '#E53E3E', fontSize: 13 },
+  sessionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, gap: 8 },
 });

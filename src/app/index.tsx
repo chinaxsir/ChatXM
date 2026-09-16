@@ -15,7 +15,7 @@ export default function ChatScreen() {
   useEffect(() => {
     async function load() {
       const c = await api.loadConfig();
-      setConfig(c || { builtin_endpoint: "https://api.frapi.kdns.fr", primary_api_key: "" });
+      setConfig(c);
       if (c) {
         const hist = await api.loadHistory(sessionId);
         setMessages(hist);
@@ -54,8 +54,13 @@ export default function ChatScreen() {
     }
   };
 
+  const handleLoginSuccess = async () => {
+    const c = await api.loadConfig();
+    setConfig(c);
+  };
+
   if (!config) {
-    return <LoginScreen onLoginSuccess={() => window.location.reload()} />;
+    return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
   }
 
   return (

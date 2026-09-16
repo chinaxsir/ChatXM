@@ -77,10 +77,11 @@ export const api = {
   },
 
   async sendChatRequest(args: any) {
+    const authHeader = args.token ? (args.token.startsWith('Bearer ') ? args.token : `Bearer ${args.token}`) : '';
     const response = await fetch(`${args.endpoint}/v1/chat/completions`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${args.token}`,
+        'Authorization': authHeader,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({

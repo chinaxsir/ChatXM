@@ -9,8 +9,7 @@
     },
     "trollstore": {
       "ios": {
-        "buildConfiguration": "Release",
-        "distribution": "internal"
+        "simulator": true
       }
     },
     "production": {

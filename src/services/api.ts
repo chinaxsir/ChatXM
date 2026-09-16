@@ -48,9 +48,13 @@ export const api = {
     return response.json();
   },
 
-  // 历史消息持久化
+  // 历史消息持久化（带会话索引）
   async saveHistory(sessionId: string, messages: any[]) {
     await AsyncStorage.setItem(`history_${sessionId}`, JSON.stringify(messages));
+    const idxRaw = await AsyncStorage.getItem('sessions_index');
+    let idx: any[] = idxRaw ? JSON.parse(idxRaw) : [];
+    idx = [{ id: sessionId, updatedAt: Date.now() }, ...idx.filter((s: any) => s.id !== sessionId)];
+    await AsyncStorage.setItem('sessions_index', JSON.stringify(idx));
   },
 
   async loadHistory(sessionId: string) {
@@ -59,13 +63,34 @@ export const api = {
   },
 
   async listSessions() {
-    const allKeys = await AsyncStorage.getAllKeys();
-    const sessions = allKeys.filter(key => key.startsWith('history_'));
-    return sessions.map(key => ({ id: key.replace('history_', ''), title: '对话 ' + key.slice(-4) }));
+    const idxRaw = await AsyncStorage.getItem('sessions_index');
+    let idx: any[] = idxRaw ? JSON.parse(idxRaw) : [];
+    // 兼容：索引起步前，从 history_ 键恢复
+    if (idx.length === 0) {
+      const allKeys = await AsyncStorage.getAllKeys();
+      idx = allKeys.filter(k => k.startsWith('history_')).map(k => ({ id: k.replace('history_', ''), updatedAt: 0 }));
+    }
+    const sessions = [];
+    for (const item of idx) {
+      let title = '对话 ' + item.id.slice(-4);
+      try {
+        const raw = await AsyncStorage.getItem(`history_${item.id}`);
+        const msgs = raw ? JSON.parse(raw) : [];
+        const firstUser = msgs.find((m: any) => m.role === 'user');
+        if (firstUser?.content) title = String(firstUser.content).slice(0, 24);
+      } catch { /* 保留默认标题 */ }
+      sessions.push({ id: item.id, title, updatedAt: item.updatedAt });
+    }
+    return sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   },
 
   async deleteSession(sessionId: string) {
     await AsyncStorage.removeItem(`history_${sessionId}`);
+    const idxRaw = await AsyncStorage.getItem('sessions_index');
+    if (idxRaw) {
+      const idx: any[] = JSON.parse(idxRaw).filter((s: any) => s.id !== sessionId);
+      await AsyncStorage.setItem('sessions_index', JSON.stringify(idx));
+    }
   },
 
   // 配置存储
@@ -99,7 +124,14 @@ export const api = {
       },
       body: JSON.stringify({
         model: args.model,
-        messages: JSON.parse(args.history || "[]").concat([{ role: "user", content: args.prompt }])
+        // 图片消息使用 OpenAI 多模态格式（与 PC 端一致）
+        messages: JSON.parse(args.history || "[]").concat([args.image ? {
+          role: "user",
+          content: [
+            { type: "text", text: args.prompt },
+            { type: "image_url", image_url: { url: args.image } },
+          ],
+        } : { role: "user", content: args.prompt }]),
       }),
     });
     return response.json();

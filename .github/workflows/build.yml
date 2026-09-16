@@ -1,26 +1,87 @@
-name: EAS Build
+name: Build APK & TrollStore IPA
+
 on:
   push:
     branches:
       - main
       - master
   workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: expo/expo-github-action@v8
+      - uses: actions/setup-node@v4
         with:
-          expo-version: latest
-          eas-version: latest
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
       - name: Install dependencies
-        run: npm install
-      - name: Build Android
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas build --platform android --profile production --non-interactive
-      - name: Build iOS (TrollStore/AdHoc)
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas build --platform ios --profile trollstore --non-interactive
+        run: npm ci
+      - name: Generate native Android project
+        run: npx expo prebuild --platform android --no-install
+      - name: Build APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatXM-android-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm ci
+      - name: Generate native iOS project
+        run: npx expo prebuild --platform ios --no-install
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios
+          pod install
+      - name: Build unsigned .app (TrollStore compatible)
+        run: |
+          cd ios
+          xcodebuild -workspace ChatXM.xcworkspace -scheme ChatXM -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -r ios/build/Build/Products/Release-iphoneos/ChatXM.app Payload/
+          zip -qry ChatXM-unsigned.ipa Payload
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatXM-ios-trollstore-ipa
+          path: ChatXM-unsigned.ipa
+
+  release:
+    needs: [build-android, build-ios]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: ChatXM Build ${{ github.run_number }}
+          body: |
+            ## 下载安装
+            - **Android**: `ChatXM-android-apk/app-release.apk` → 下载后直接安装
+            - **iOS (巨魔 TrollStore)**: `ChatXM-ios-trollstore-ipa/ChatXM-unsigned.ipa` → 下载后用 TrollStore 打开安装（免签名，免开发者账号）
+          files: artifacts/**/*

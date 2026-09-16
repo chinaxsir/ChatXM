@@ -48,8 +48,8 @@ export default function ChatScreen() {
       } else {
         throw new Error(JSON.stringify(response));
       }
-    } catch (e) {
-      alert("对话请求失败，请检查设置中的 Endpoint 和 API Key");
+    } catch (e: any) {
+      alert('对话请求失败: ' + (e?.message || e));
       console.error(e);
     }
   };

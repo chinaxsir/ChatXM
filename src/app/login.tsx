@@ -12,30 +12,48 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess: () => 
     setLoading(true);
     try {
       const res = await api.login({ username, password });
-      if (res.status === 'success') {
-        const userData = res.data;
-        let apiKeys: string[] = [];
-        
-        try {
-          const tokenRes = await api.fetchApiKeys(userData.session_token);
-          apiKeys = tokenRes.data?.tokens?.map((t: any) => t.token_key) || [];
-        } catch (e) {
-          console.warn("拉取 API Keys 失败:", e);
-        }
-
-        const finalConfig = {
-          ...userData,
-          username,
-          api_keys: apiKeys,
-          primary_api_key: apiKeys[0] || userData.primary_api_key || "",
-          builtin_endpoint: "https://api.frapi.kdns.fr"
-        };
-        
-        await api.saveConfig(finalConfig);
-        onLoginSuccess();
-      } else {
-        alert('登录失败: ' + res.message);
+      console.log('=== 登录响应 ===', res);
+      if (res?.status !== 'success') {
+        alert('登录失败: ' + (res?.message || JSON.stringify(res).substring(0, 150)));
+        return;
       }
+
+      const d = res.data || {};
+      // 步骤1: 优先从登录响应提取 API Key（与 PC 端逻辑一致）
+      let apiKeys: string[] = [];
+      if (Array.isArray(d.tokens)) {
+        apiKeys = d.tokens.map((t: any) => t?.token_key).filter(Boolean);
+      }
+      // 步骤2: 兜底调用 tokens 接口，兼容多种字段名
+      if (apiKeys.length === 0 && d.session_token) {
+        try {
+          const kRes = await api.fetchApiKeys(d.session_token);
+          console.log('=== API Key 接口响应 ===', kRes);
+          const tarr = kRes?.data?.tokens || kRes?.tokens || (Array.isArray(kRes) ? kRes : []);
+          apiKeys = tarr
+            .map((t: any) => (typeof t === 'string' ? t : t?.token_key || t?.key || t?.api_key || ''))
+            .filter(Boolean);
+        } catch (e) {
+          console.warn('拉取 API Keys 失败:', e);
+        }
+      }
+
+      const finalConfig = {
+        session_token: d.session_token || '',
+        username: d.username || username,
+        balance: d.balance || 0,
+        builtin_endpoint: 'https://api.frapi.kdns.fr',
+        api_keys: apiKeys,
+        primary_api_key: apiKeys[0] || '',
+        current_model: 'frapi',
+      };
+      console.log('=== 最终保存的配置 ===', finalConfig);
+
+      await api.saveConfig(finalConfig);
+      if (apiKeys.length === 0) {
+        alert('登录成功，但未获取到 API Key，请检查账号下的 Token 列表');
+      }
+      onLoginSuccess();
     } catch (e) {
       alert('登录异常: ' + e);
     } finally {

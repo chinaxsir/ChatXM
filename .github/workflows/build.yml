@@ -17,6 +17,10 @@ jobs:
       - name: Install dependencies
         run: npm install
       - name: Build Android
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: eas build --platform android --profile production --non-interactive
       - name: Build iOS (TrollStore/AdHoc)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: eas build --platform ios --profile trollstore --non-interactive

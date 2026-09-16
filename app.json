@@ -8,9 +8,11 @@
     "scheme": "chatxm",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "bundleIdentifier": "com.xsircn.chatxm"
     },
     "android": {
+      "package": "com.xsircn.chatxm",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",

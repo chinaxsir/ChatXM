@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { StyleSheet, View, TextInput, TouchableOpacity, ScrollView, Modal, Alert } from 'react-native';
+import { StyleSheet, View, TextInput, TouchableOpacity, ScrollView, Modal, Alert, Platform } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
@@ -37,6 +37,9 @@ export default function SettingsScreen() {
       return () => { active = false; };
     }, [])
   );
+
+  const today = new Date().toISOString().slice(0, 10);
+  const todayUsage = config?.usage?.daily?.[today];
 
   if (!config?.session_token) {
     return (
@@ -95,18 +98,21 @@ export default function SettingsScreen() {
     }
   };
 
+  const doLogout = async () => {
+    await api.clearConfig();
+    router.replace('/login');
+  };
+
   const handleLogout = () => {
-    Alert.alert('退出登录', '确定要退出当前账号吗？', [
-      { text: '取消', style: 'cancel' },
-      {
-        text: '确定',
-        style: 'destructive',
-        onPress: async () => {
-          await api.clearConfig();
-          router.replace('/login');
-        },
-      },
-    ]);
+    // Web 端 Alert.alert 不支持按钮回调，需用 window.confirm
+    if (Platform.OS === 'web') {
+      if (window.confirm('确定要退出当前账号吗？')) doLogout();
+    } else {
+      Alert.alert('退出登录', '确定要退出当前账号吗？', [
+        { text: '取消', style: 'cancel' },
+        { text: '确定', style: 'destructive', onPress: doLogout },
+      ]);
+    }
   };
 
   const removeApi = (idx: number) => {
@@ -130,8 +136,14 @@ export default function SettingsScreen() {
             <ThemedText type="subtitle">${Number(config.balance ?? 0).toFixed(2)}</ThemedText>
           </View>
           <View style={styles.statBox}>
-            <ThemedText>API Keys</ThemedText>
-            <ThemedText type="subtitle">{(config.api_keys || []).length}</ThemedText>
+            <ThemedText>今日消耗</ThemedText>
+            <ThemedText type="subtitle">{todayUsage?.tokens?.toLocaleString() || 0}</ThemedText>
+            <ThemedText style={styles.hint}>{todayUsage?.count || 0} 次对话</ThemedText>
+          </View>
+          <View style={styles.statBox}>
+            <ThemedText>累计消耗</ThemedText>
+            <ThemedText type="subtitle">{(config.usage?.total || 0).toLocaleString()}</ThemedText>
+            <ThemedText style={styles.hint}>{config.usage?.count || 0} 次对话</ThemedText>
           </View>
         </View>
       </View>

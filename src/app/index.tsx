@@ -69,6 +69,25 @@ export default function ChatScreen() {
         const updatedMessages = [...newMessages, { role: 'assistant', content: response.choices[0].message.content }];
         await api.saveHistory(sessionId, updatedMessages);
         setMessages(updatedMessages);
+
+        // 累计 Token 消耗统计（总计 + 按天）
+        const usage: any = response.usage || {};
+        const day = new Date().toISOString().slice(0, 10);
+        const u = config.usage || { total: 0, prompt: 0, completion: 0, count: 0, daily: {} as any };
+        const total = usage.total_tokens ?? (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
+        const d = u.daily[day] || { tokens: 0, count: 0 };
+        const newConfig = {
+          ...config,
+          usage: {
+            total: (u.total || 0) + total,
+            prompt: (u.prompt || 0) + (usage.prompt_tokens || 0),
+            completion: (u.completion || 0) + (usage.completion_tokens || 0),
+            count: (u.count || 0) + 1,
+            daily: { ...u.daily, [day]: { tokens: d.tokens + total, count: d.count + 1 } },
+          },
+        };
+        await api.saveConfig(newConfig);
+        setConfig(newConfig);
       } else {
         throw new Error(JSON.stringify(response));
       }

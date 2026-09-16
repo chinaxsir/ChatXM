@@ -60,7 +60,7 @@ export default function SettingsScreen() {
 
   const doLogout = async () => {
     await api.clearConfig();
-    router.replace('/login');
+    router.replace('/');
   };
 
   const handleLogout = () => {

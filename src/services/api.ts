@@ -1,0 +1,93 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const BASE_API_URL = "https://api.frapi.kdns.fr";
+
+export const api = {
+  // 登录
+  async login(credentials: any) {
+    const response = await fetch(`${BASE_API_URL}/api/client-portal/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials),
+    });
+    return response.json();
+  },
+
+  // 获取 API Keys
+  async fetchApiKeys(sessionToken: string) {
+    const response = await fetch(`${BASE_API_URL}/api/client-portal/tokens`, {
+      headers: { 'Authorization': sessionToken },
+    });
+    return response.json();
+  },
+
+  // 充值接口
+  async recharge(sessionToken: string, voucherCode: string) {
+    const response = await fetch(`${BASE_API_URL}/api/client-portal/recharge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': sessionToken },
+      body: JSON.stringify({ voucher_code: voucherCode }),
+    });
+    return response.json();
+  },
+
+  // 余额与 Token 用量刷新
+  async refreshAccount(sessionToken: string) {
+    const response = await fetch(`${BASE_API_URL}/api/client-portal/account`, {
+      headers: { 'Authorization': sessionToken },
+    });
+    return response.json();
+  },
+
+  // 历史消息持久化
+  async saveHistory(sessionId: string, messages: any[]) {
+    await AsyncStorage.setItem(`history_${sessionId}`, JSON.stringify(messages));
+  },
+
+  async loadHistory(sessionId: string) {
+    const history = await AsyncStorage.getItem(`history_${sessionId}`);
+    return history ? JSON.parse(history) : [];
+  },
+
+  async listSessions() {
+    const allKeys = await AsyncStorage.getAllKeys();
+    const sessions = allKeys.filter(key => key.startsWith('history_'));
+    return sessions.map(key => ({ id: key.replace('history_', ''), title: '对话 ' + key.slice(-4) }));
+  },
+
+  async deleteSession(sessionId: string) {
+    await AsyncStorage.removeItem(`history_${sessionId}`);
+  },
+
+  // 配置存储
+  async saveConfig(config: any) {
+    await AsyncStorage.setItem('agent_config', JSON.stringify(config));
+  },
+
+  async loadConfig() {
+    const config = await AsyncStorage.getItem('agent_config');
+    return config ? JSON.parse(config) : null;
+  },
+
+  async fetchModels(endpoint: string, apiKey: string) {
+    const response = await fetch(`${endpoint}/v1/models`, {
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+    });
+    return response.json();
+  },
+
+  async sendChatRequest(args: any) {
+    const response = await fetch(`${args.endpoint}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${args.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: args.model,
+        messages: JSON.parse(args.history || "[]").concat([{ role: "user", content: args.prompt }])
+      }),
+    });
+    return response.json();
+  }
+};

@@ -9,10 +9,9 @@
     },
     "trollstore": {
       "ios": {
-        "buildConfiguration": "Release"
-      },
-      "distribution": "internal",
-      "iosDistribution": "adhoc"
+        "buildConfiguration": "Release",
+        "distribution": "internal"
+      }
     },
     "production": {
       "autoIncrement": true

@@ -1,9 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import { StyleSheet, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, SafeAreaView } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
+import { useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
 import LoginScreen from './login';
+
+const BUILTIN_ENDPOINT = 'https://api.frapi.kdns.fr';
 
 export default function ChatScreen() {
   const [config, setConfig] = useState<any>(null);
@@ -12,21 +15,42 @@ export default function ChatScreen() {
   const [input, setInput] = useState('');
   const [model, setModel] = useState('frapi');
 
-  useEffect(() => {
-    async function load() {
-      const c = await api.loadConfig();
-      setConfig(c);
-      if (c) {
-        const hist = await api.loadHistory(sessionId);
-        setMessages(hist);
-      }
+  // 每次切到该 Tab 时重新读取配置与历史（支持退出重登）
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      (async () => {
+        const c = await api.loadConfig();
+        if (!active) return;
+        setConfig(c);
+        if (c) {
+          if (c.current_model) setModel(c.current_model);
+          const hist = await api.loadHistory(sessionId);
+          if (active) setMessages(hist);
+        }
+      })();
+      return () => { active = false; };
+    }, [sessionId])
+  );
+
+  // 解析所选模型：tp:序号:模型名 → 第三方 API；否则内置
+  const resolveTarget = () => {
+    if (model.startsWith('tp:')) {
+      const [, idxStr, ...rest] = model.split(':');
+      const tp = config?.third_party_apis?.[Number(idxStr)];
+      if (tp) return { endpoint: tp.endpoint, token: tp.apiKey, model: rest.join(':') };
     }
-    load();
-  }, []);
+    return { endpoint: config?.builtin_endpoint || BUILTIN_ENDPOINT, token: config?.primary_api_key, model };
+  };
 
   const sendMessage = async () => {
     if (!input.trim() || !config) return;
-    
+    const target = resolveTarget();
+    if (!target.token) {
+      alert('未配置 API Key，请重新登录或在设置中添加 API');
+      return;
+    }
+
     const userMsg = { role: 'user', content: input };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
@@ -34,9 +58,9 @@ export default function ChatScreen() {
 
     try {
       const response = await api.sendChatRequest({
-        endpoint: config.builtin_endpoint || "https://api.frapi.kdns.fr",
-        token: config.primary_api_key,
-        model: model,
+        endpoint: target.endpoint,
+        token: target.token,
+        model: target.model,
         prompt: input,
         history: JSON.stringify(messages)
       });
@@ -68,8 +92,11 @@ export default function ChatScreen() {
       <View style={styles.modelPickerContainer}>
         <Picker selectedValue={model} onValueChange={(item) => setModel(item)}>
           <Picker.Item label="frapi (智能选择)" value="frapi" />
-          <Picker.Item label="gpt-4o" value="gpt-4o" />
-          <Picker.Item label="claude-3-5-sonnet" value="claude-3-5-sonnet" />
+          {(config?.third_party_apis || []).map((tp: any, idx: number) =>
+            (tp.models || []).map((m: string) => (
+              <Picker.Item key={`tp-${idx}-${m}`} label={`${tp.name || 'API'} · ${m}`} value={`tp:${idx}:${m}`} />
+            ))
+          )}
         </Picker>
       </View>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.content}>

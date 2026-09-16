@@ -1,12 +1,15 @@
 import React, { useState } from 'react';
 import { StyleSheet, View, TextInput, TouchableOpacity, SafeAreaView, ActivityIndicator } from 'react-native';
+import { useRouter } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
 
-export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess: () => void }) {
+export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const router = useRouter();
+  const finish = onLoginSuccess ?? (() => router.replace('/'));
 
   const handleLogin = async () => {
     setLoading(true);
@@ -53,7 +56,7 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess: () => 
       if (apiKeys.length === 0) {
         alert('登录成功，但未获取到 API Key，请检查账号下的 Token 列表');
       }
-      onLoginSuccess();
+      finish();
     } catch (e) {
       alert('登录异常: ' + e);
     } finally {

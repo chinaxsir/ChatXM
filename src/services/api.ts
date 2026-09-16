@@ -13,28 +13,37 @@ export const api = {
     return response.json();
   },
 
-  // 获取 API Keys
+  // 获取 API Keys（与 PC 端 Rust 后端一致：先 dashboard 后 tokens，用 x-session-token）
   async fetchApiKeys(sessionToken: string) {
-    const response = await fetch(`${BASE_API_URL}/api/client-portal/tokens`, {
-      headers: { 'Authorization': sessionToken },
-    });
-    return response.json();
+    const urls = [
+      `${BASE_API_URL}/api/client-portal/dashboard`,
+      `${BASE_API_URL}/api/client-portal/tokens`,
+    ];
+    for (const url of urls) {
+      try {
+        const response = await fetch(url, {
+          headers: { 'x-session-token': sessionToken, 'Authorization': sessionToken },
+        });
+        if (response.ok) return response.json();
+      } catch { /* 尝试下一个 */ }
+    }
+    return {};
   },
 
-  // 充值接口
+  // 充值接口（x-session-token 认证）
   async recharge(sessionToken: string, voucherCode: string) {
     const response = await fetch(`${BASE_API_URL}/api/client-portal/recharge`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': sessionToken },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': sessionToken },
       body: JSON.stringify({ voucher_code: voucherCode }),
     });
     return response.json();
   },
 
-  // 余额与 Token 用量刷新
+  // 余额与账户信息刷新（GET /dashboard + x-session-token）
   async refreshAccount(sessionToken: string) {
-    const response = await fetch(`${BASE_API_URL}/api/client-portal/account`, {
-      headers: { 'Authorization': sessionToken },
+    const response = await fetch(`${BASE_API_URL}/api/client-portal/dashboard`, {
+      headers: { 'x-session-token': sessionToken },
     });
     return response.json();
   },
@@ -67,6 +76,10 @@ export const api = {
   async loadConfig() {
     const config = await AsyncStorage.getItem('agent_config');
     return config ? JSON.parse(config) : null;
+  },
+
+  async clearConfig() {
+    await AsyncStorage.removeItem('agent_config');
   },
 
   async fetchModels(endpoint: string, apiKey: string) {

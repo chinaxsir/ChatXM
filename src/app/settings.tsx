@@ -32,13 +32,27 @@ export default function SettingsScreen() {
           try {
             const r = await api.refreshAccount(c.session_token);
             if (!active || !r) return;
-            const balance = r?.data?.balance ?? r?.balance ?? r?.data?.user?.balance;
-            if (balance != null) {
-              const updated = { ...c, balance };
-              await api.saveConfig(updated);
-              setConfig(updated);
+            const d = r?.data ?? r;
+            const balance = d?.balance ?? d?.user?.balance;
+            // 同步后台最新 API Keys（用户可能在网页端增删过 key）
+            const tokens = d?.tokens;
+            let updated = { ...c };
+            if (balance != null) updated.balance = balance;
+            if (Array.isArray(tokens)) {
+              const keys = tokens.map((t: any) => t?.token_key).filter(Boolean);
+              if (keys.length) {
+                updated.api_keys = keys;
+                // 保存 key 元数据（名称/额度），用于设置页展示
+                updated.api_key_meta = tokens.filter((t: any) => t?.token_key);
+                // 当前 primary 已被删除时，自动回退到第一个 key（修复 unauthorized）
+                if (!keys.includes(updated.primary_api_key)) {
+                  updated.primary_api_key = keys[0];
+                }
+              }
             }
-          } catch { /* 静默失败，保留本地余额 */ }
+            await api.saveConfig(updated);
+            setConfig(updated);
+          } catch { /* 静默失败，保留本地数据 */ }
         }
       })();
       return () => { active = false; };
@@ -58,6 +72,14 @@ export default function SettingsScreen() {
       </View>
     );
   }
+
+  // 切换当前对话使用的官方 API Key（所有 key 共用同一个 frapi 智能模型池）
+  const switchPrimaryKey = async (key: string) => {
+    if (!config || key === config.primary_api_key) return;
+    const updated = { ...config, primary_api_key: key };
+    await api.saveConfig(updated);
+    setConfig(updated);
+  };
 
   const doLogout = async () => {
     await api.clearConfig();
@@ -201,6 +223,47 @@ export default function SettingsScreen() {
         <TouchableOpacity style={[styles.btn, { backgroundColor: C.accent, marginTop: 14 }]} onPress={() => setShowRecharge(true)}>
           <ThemedText style={styles.btnText}>💵 充值</ThemedText>
         </TouchableOpacity>
+      </View>
+
+      {/* 官方 API Keys 卡片：所有 key 共用同一智能模型池，可切换当前使用的 key */}
+      <View style={[styles.card, { backgroundColor: C.card, borderColor: C.border, padding: 14 }]}>
+        <View style={styles.row}>
+          <ThemedText style={styles.sectionTitle}>🔑 官方 API</ThemedText>
+          <ThemedText style={{ color: C.sub, fontSize: 12 }}>{config.api_keys?.length || 0} 个 Key · 共用智能模型池</ThemedText>
+        </View>
+        {(config.api_keys?.length || 0) === 0 ? (
+          <View style={{ alignItems: 'center', paddingVertical: 14 }}>
+            <ThemedText style={{ color: C.sub, fontSize: 13 }}>暂无 API Key，请退出后重新登录同步</ThemedText>
+          </View>
+        ) : (
+          config.api_keys.map((key: string, i: number) => {
+            const meta = config.api_key_meta?.find((t: any) => t.token_key === key);
+            const active = key === config.primary_api_key;
+            const label = meta?.name || meta?.token_name || `Key ${i + 1}`;
+            const masked = key.length > 10 ? `${key.slice(0, 6)}...${key.slice(-4)}` : key;
+            return (
+              <TouchableOpacity
+                key={key}
+                onPress={() => switchPrimaryKey(key)}
+                style={[
+                  styles.keyItem,
+                  { backgroundColor: C.bg, borderColor: active ? C.accent : C.border },
+                  active && { borderWidth: 2 },
+                ]}
+              >
+                <View style={{ flex: 1 }}>
+                  <ThemedText style={{ fontSize: 14, fontWeight: '600', ...(active ? { color: C.accent } : {}) }}>
+                    {label}{active ? ' · 使用中' : ''}
+                  </ThemedText>
+                  <ThemedText style={{ fontSize: 12, color: C.sub, marginTop: 2 }}>{masked}</ThemedText>
+                </View>
+                <View style={[styles.radio, { borderColor: active ? C.accent : C.sub }]}>
+                  {active && <View style={[styles.radioDot, { backgroundColor: C.accent }]} />}
+                </View>
+              </TouchableOpacity>
+            );
+          })
+        )}
       </View>
 
       {/* 第三方 API 卡片 */}
@@ -354,6 +417,9 @@ const styles = StyleSheet.create({
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   logoutBtn: { borderWidth: 1, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 18 },
   sectionTitle: { fontSize: 15, fontWeight: '600', marginBottom: 12 },
+  keyItem: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 12, borderWidth: 1, marginBottom: 8 },
+  radio: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  radioDot: { width: 10, height: 10, borderRadius: 5 },
   stats: { flexDirection: 'row', gap: 8 },
   statBox: { flex: 1, alignItems: 'center', gap: 4, paddingVertical: 12, paddingHorizontal: 4, borderRadius: 12 },
   statLabel: { fontSize: 12 },

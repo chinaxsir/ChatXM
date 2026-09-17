@@ -201,7 +201,7 @@ export default function ChatScreen() {
       const tp = config?.third_party_apis?.[Number(idxStr)];
       if (tp) return { endpoint: tp.endpoint, token: tp.apiKey, model: rest.join(':') };
     }
-    return { endpoint: config?.builtin_endpoint || BUILTIN_ENDPOINT, token: config?.primary_api_key, model };
+    return { endpoint: config?.builtin_endpoint || BUILTIN_ENDPOINT, token: config?.primary_api_key || config?.api_keys?.[0] || '', model };
   };
 
   // 组装最终提示文本（含文件内容）

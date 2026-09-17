@@ -55,15 +55,18 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
 
       const d = res.data || {};
       let apiKeys: string[] = [];
+      let tokenMeta: any[] = [];
       if (Array.isArray(d.tokens)) {
-        apiKeys = d.tokens.map((t: any) => t?.token_key).filter(Boolean);
+        tokenMeta = d.tokens.filter((t: any) => t?.token_key);
+        apiKeys = tokenMeta.map((t: any) => t.token_key);
       }
       if (apiKeys.length === 0 && d.session_token) {
         try {
           const kRes = await api.fetchApiKeys(d.session_token);
           console.log('=== API Key 接口响应 ===', kRes);
           const tarr = kRes?.data?.tokens || kRes?.tokens || (Array.isArray(kRes) ? kRes : []);
-          apiKeys = tarr
+          tokenMeta = tarr.filter((t: any) => typeof t === 'string' || t?.token_key || t?.key || t?.api_key);
+          apiKeys = tokenMeta
             .map((t: any) => (typeof t === 'string' ? t : t?.token_key || t?.key || t?.api_key || ''))
             .filter(Boolean);
         } catch (e) {
@@ -77,6 +80,7 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
         balance: d.balance || 0,
         builtin_endpoint: 'https://api.frapi.kdns.fr',
         api_keys: apiKeys,
+        api_key_meta: tokenMeta,
         primary_api_key: apiKeys[0] || '',
         current_model: 'frapi',
       };

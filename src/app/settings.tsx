@@ -204,46 +204,27 @@ export default function SettingsScreen() {
       </View>
 
       {/* 统计卡片 */}
-      <View style={[styles.card, { backgroundColor: C.card, borderColor: C.border, padding: 14 }]}>
+      <View style={[styles.card, { backgroundColor: C.card, borderColor: C.border }]}>
         <ThemedText style={styles.sectionTitle}>使用统计</ThemedText>
-        {isNarrow ? (
-          // 窄屏：余额独占一行大显示，今日/累计并排
-          <>
-            <View style={[styles.balanceBox, { backgroundColor: C.bg, borderColor: C.border }]}>
-              <ThemedText style={[styles.statLabel, { color: C.sub }]}>💰 账户余额</ThemedText>
-              <ThemedText style={[styles.balanceBig, { color: C.accent }]}>${Number(config.balance ?? 0).toFixed(2)}</ThemedText>
-            </View>
-            <View style={[styles.stats, { marginTop: 10 }]}>
-              <View style={[styles.statBox, { backgroundColor: C.bg }]}>
-                <ThemedText style={[styles.statLabel, { color: C.sub }]}>⚡ 今日</ThemedText>
-                <ThemedText type="subtitle">{(todayUsage?.tokens || 0).toLocaleString()}</ThemedText>
-                <ThemedText style={[styles.hint, { color: C.sub, fontSize: 11 }]}>{todayUsage?.count || 0} 次</ThemedText>
-              </View>
-              <View style={[styles.statBox, { backgroundColor: C.bg }]}>
-                <ThemedText style={[styles.statLabel, { color: C.sub }]}>📊 累计</ThemedText>
-                <ThemedText type="subtitle">{(config.usage?.total || 0).toLocaleString()}</ThemedText>
-                <ThemedText style={[styles.hint, { color: C.sub, fontSize: 11 }]}>{config.usage?.count || 0} 次</ThemedText>
-              </View>
-            </View>
-          </>
-        ) : (
-          <View style={styles.stats}>
-            <View style={[styles.statBox, { backgroundColor: C.bg }]}>
-              <ThemedText style={[styles.statLabel, { color: C.sub }]}>💰 余额</ThemedText>
-              <ThemedText type="title" style={{ color: C.accent }}>${Number(config.balance ?? 0).toFixed(2)}</ThemedText>
-            </View>
-            <View style={[styles.statBox, { backgroundColor: C.bg }]}>
-              <ThemedText style={[styles.statLabel, { color: C.sub }]}>⚡ 今日</ThemedText>
-              <ThemedText type="subtitle">{(todayUsage?.tokens || 0).toLocaleString()}</ThemedText>
-              <ThemedText style={[styles.hint, { color: C.sub, fontSize: 11 }]}>{todayUsage?.count || 0} 次</ThemedText>
-            </View>
-            <View style={[styles.statBox, { backgroundColor: C.bg }]}>
-              <ThemedText style={[styles.statLabel, { color: C.sub }]}>📊 累计</ThemedText>
-              <ThemedText type="subtitle">{(config.usage?.total || 0).toLocaleString()}</ThemedText>
-              <ThemedText style={[styles.hint, { color: C.sub, fontSize: 11 }]}>{config.usage?.count || 0} 次</ThemedText>
-            </View>
+        {/* 三栏 flex:1 均分，中间用分隔线隔开，无嵌套背景 */}
+        <View style={[styles.stats, { borderBottomColor: C.border, borderBottomWidth: StyleSheet.hairlineWidth }]}>
+          <View style={[styles.statBox]}>
+            <ThemedText style={[styles.statLabel, { color: C.sub }]}>💰 余额</ThemedText>
+            <ThemedText style={[styles.balanceText, { color: C.accent }]}>${Number(config.balance ?? 0).toFixed(2)}</ThemedText>
           </View>
-        )}
+          <View style={[styles.statSep, { backgroundColor: C.border }]} />
+          <View style={[styles.statBox]}>
+            <ThemedText style={[styles.statLabel, { color: C.sub }]}>⚡ 今日</ThemedText>
+            <ThemedText style={styles.statValue}>{(todayUsage?.tokens || 0).toLocaleString()}</ThemedText>
+            <ThemedText style={[styles.hint, { color: C.sub }]}>{todayUsage?.count || 0} 次</ThemedText>
+          </View>
+          <View style={[styles.statSep, { backgroundColor: C.border }]} />
+          <View style={[styles.statBox]}>
+            <ThemedText style={[styles.statLabel, { color: C.sub }]}>📊 累计</ThemedText>
+            <ThemedText style={styles.statValue}>{(config.usage?.total || 0).toLocaleString()}</ThemedText>
+            <ThemedText style={[styles.hint, { color: C.sub }]}>{config.usage?.count || 0} 次</ThemedText>
+          </View>
+        </View>
         <TouchableOpacity style={[styles.btn, { backgroundColor: C.accent, marginTop: 14 }]} onPress={() => setShowRecharge(true)}>
           <ThemedText style={styles.btnText}>💵 充值</ThemedText>
         </TouchableOpacity>
@@ -456,11 +437,12 @@ const styles = StyleSheet.create({
   keyItem: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 12, borderWidth: 1, marginBottom: 8 },
   radio: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
   radioDot: { width: 10, height: 10, borderRadius: 5 },
-  stats: { flexDirection: 'row', gap: 8 },
-  balanceBox: { alignItems: 'center', gap: 6, paddingVertical: 18, paddingHorizontal: 14, borderRadius: 12, borderWidth: 1 },
-  balanceBig: { fontSize: 34, fontWeight: '800', letterSpacing: -1 },
-  statBox: { flex: 1, alignItems: 'center', gap: 4, paddingVertical: 12, paddingHorizontal: 4, borderRadius: 12 },
-  statLabel: { fontSize: 12 },
+  stats: { flexDirection: 'row', alignItems: 'stretch', marginTop: 4 },
+  statBox: { flex: 1, alignItems: 'center', paddingVertical: 14, gap: 2 },
+  statSep: { width: StyleSheet.hairlineWidth, marginVertical: 10 },
+  balanceText: { fontSize: 20, fontWeight: '700' },
+  statValue: { fontSize: 18, fontWeight: '600' },
+  statLabel: { fontSize: 12, marginBottom: 2 },
   btn: { padding: 14, borderRadius: 12, alignItems: 'center', elevation: 3, shadowColor: '#007AFF', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4 },
   btnText: { color: '#FFF', fontWeight: '600' },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },

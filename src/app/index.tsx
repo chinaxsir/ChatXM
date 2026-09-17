@@ -479,7 +479,7 @@ export default function ChatScreen() {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.content}>
         {messages.length === 0 ? (
           <View style={styles.emptyState}>
-            <ThemedText style={{ color: C.sub, fontSize: 16 }}>选择模型，开始对话</ThemedText>
+            <ThemedText style={{ color: C.sub, fontSize: 16 }}>开始对话吧</ThemedText>
           </View>
         ) : (
           <FlatList

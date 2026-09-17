@@ -148,7 +148,8 @@ export const api = {
 
   async sendChatRequest(args: any) {
     const authHeader = args.token ? (args.token.startsWith('Bearer ') ? args.token : `Bearer ${args.token}`) : '';
-    const response = await fetch(`${args.endpoint}/v1/chat/completions`, {
+    const base = normalizeEndpoint(args.endpoint);
+    const response = await fetch(`${base}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': authHeader,

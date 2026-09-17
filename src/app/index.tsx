@@ -446,13 +446,17 @@ export default function ChatScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: C.bg }]}>
       {/* 顶栏：历史 | 模型选择 | 新对话 | 对话/设置 切换 */}
       <View style={[styles.header, { backgroundColor: C.headerBg, borderBottomColor: C.border }]}>
-        <TouchableOpacity style={[styles.iconBtn, { backgroundColor: C.btnBg }]} onPress={() => { loadSessions(); setShowHistory(true); }}>
+        <Pressable style={({ pressed }) => [styles.iconBtn, { backgroundColor: C.btnBg }, pressed && { opacity: 0.6, transform: [{ scale: 0.92 }] }]} onPress={() => { loadSessions(); setShowHistory(true); }}>
           <Text style={[styles.iconBtnText, { color: C.btnText }]}>☰</Text>
-        </TouchableOpacity>
+        </Pressable>
 
         {/* 模型选择：胶囊，收窄宽度 */}
         <Pressable
-          style={[styles.modelChip, { backgroundColor: thirdPartyModels.length > 0 ? C.chip : C.btnBg }]}
+          style={({ pressed }) => [
+            styles.modelChip,
+            { backgroundColor: thirdPartyModels.length > 0 ? C.chip : C.btnBg },
+            thirdPartyModels.length > 0 && pressed && { opacity: 0.7, transform: [{ scale: 0.96 }] },
+          ]}
           onPress={() => thirdPartyModels.length > 0 ? setShowModel(true) : null}
         >
           <ThemedText style={[styles.modelChipText, { color: thirdPartyModels.length > 0 ? C.accent : C.btnText }]} numberOfLines={1}>
@@ -461,25 +465,41 @@ export default function ChatScreen() {
           {thirdPartyModels.length > 0 && <Text style={[styles.chevron, { color: C.accent }]}>▾</Text>}
         </Pressable>
 
-        <TouchableOpacity style={[styles.iconBtn, { backgroundColor: C.accentSoft }]} onPress={newChat}>
+        <Pressable style={({ pressed }) => [styles.iconBtn, { backgroundColor: C.accentSoft }, pressed && { opacity: 0.7, transform: [{ scale: 0.92 }] }]} onPress={newChat}>
           <Text style={[styles.iconBtnText, { color: C.accent, fontWeight: '700' }]}>＋</Text>
-        </TouchableOpacity>
+        </Pressable>
 
         {/* 对话/设置 分段切换 */}
         <View style={[styles.segment, { backgroundColor: C.btnBg }]}>
-          <TouchableOpacity style={[styles.segItem, { backgroundColor: C.accent }]}>
+          <View style={[styles.segItem, { backgroundColor: C.accent }]}>
             <ThemedText style={styles.segActiveText}>对话</ThemedText>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.segItem} onPress={() => router.replace('/settings')}>
+          </View>
+          <Pressable style={({ pressed }) => [styles.segItem, pressed && { opacity: 0.6 }]} onPress={() => router.replace('/settings')}>
             <ThemedText style={{ color: C.btnText }}>设置</ThemedText>
-          </TouchableOpacity>
+          </Pressable>
         </View>
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.content}>
         {messages.length === 0 ? (
           <View style={styles.emptyState}>
-            <ThemedText style={{ color: C.sub, fontSize: 16 }}>开始对话吧</ThemedText>
+            <View style={[styles.emptyLogo, { backgroundColor: C.accent }]}>
+              <Text style={styles.emptyLogoText}>AI</Text>
+            </View>
+            <ThemedText style={[styles.emptyTitle, { color: C.btnText }]}>你好，我是 Frapi AI</ThemedText>
+            <ThemedText style={[styles.emptySubtitle, { color: C.sub }]}>随时为你提供智能对话服务</ThemedText>
+            <View style={styles.emptyChips}>
+              {['帮我写一段代码', '解释一下这个概念', '翻译这段话', '帮我润色文案'].map((q) => (
+                <TouchableOpacity
+                  key={q}
+                  style={[styles.emptyChip, { backgroundColor: C.btnBg, borderColor: C.border }]}
+                  onPress={() => { setInput(q); }}
+                  activeOpacity={0.7}
+                >
+                  <ThemedText style={[styles.emptyChipText, { color: C.btnText }]}>{q}</ThemedText>
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
         ) : (
           <FlatList
@@ -575,22 +595,22 @@ export default function ChatScreen() {
         {/* 输入区：拍照 | 文件 | 输入框 | 发送 */}
         <View style={[styles.inputBar, { backgroundColor: C.headerBg, borderTopColor: C.border }]}>
           {Platform.OS !== 'web' && (
-            <TouchableOpacity style={styles.attachBtn} onPress={() => pickImage(true)}>
+            <Pressable style={({ pressed }) => [styles.attachBtn, pressed && { opacity: 0.5, transform: [{ scale: 0.88 }] }]} onPress={() => pickImage(true)}>
               <Text style={styles.attachIcon}>📷</Text>
-            </TouchableOpacity>
+            </Pressable>
           )}
-          <TouchableOpacity style={styles.attachBtn} onPress={() => pickImage(false)}>
+          <Pressable style={({ pressed }) => [styles.attachBtn, pressed && { opacity: 0.5, transform: [{ scale: 0.88 }] }]} onPress={() => pickImage(false)}>
             <Text style={styles.attachIcon}>🖼️</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.attachBtn} onPress={pickFile}>
+          </Pressable>
+          <Pressable style={({ pressed }) => [styles.attachBtn, pressed && { opacity: 0.5, transform: [{ scale: 0.88 }] }]} onPress={pickFile}>
             <Text style={styles.attachIcon}>📄</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.attachBtn, listening && { backgroundColor: C.accentSoft }]}
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.attachBtn, listening && { backgroundColor: C.accentSoft }, pressed && { opacity: 0.5, transform: [{ scale: 0.88 }] }]}
             onPress={toggleVoice}
           >
             <Text style={[styles.attachIcon, listening && { color: C.accent }]}>{listening ? '🔴' : '🎤'}</Text>
-          </TouchableOpacity>
+          </Pressable>
           <TextInput
             style={[styles.input, { backgroundColor: C.inputBg, color: C.aiText }]}
             value={input}
@@ -600,16 +620,20 @@ export default function ChatScreen() {
             multiline
           />
           {sending ? (
-            <TouchableOpacity style={[styles.sendBtn, { backgroundColor: C.danger }]} onPress={stopStreaming}>
-              <ThemedText style={styles.sendText}>停止</ThemedText>
-            </TouchableOpacity>
+            <Pressable style={({ pressed }) => [styles.sendBtn, { backgroundColor: C.danger }, pressed && { opacity: 0.7 }]} onPress={stopStreaming}>
+              <ThemedText style={styles.sendText}>■ 停止</ThemedText>
+            </Pressable>
           ) : (
-            <TouchableOpacity
-              style={[styles.sendBtn, { backgroundColor: (!input.trim() && !image && !fileName) ? C.sub : C.accent }]}
+            <Pressable
+              style={({ pressed }) => [
+                styles.sendBtn,
+                { backgroundColor: (!input.trim() && !image && !fileName) ? C.sub : C.accent },
+                (!input.trim() && !image && !fileName) ? { opacity: 0.5 } : pressed && { opacity: 0.8, transform: [{ scale: 0.94 }] },
+              ]}
               onPress={sendMessage}
             >
               <ThemedText style={styles.sendText}>发送</ThemedText>
-            </TouchableOpacity>
+            </Pressable>
           )}
         </View>
       </KeyboardAvoidingView>
@@ -730,7 +754,14 @@ const styles = StyleSheet.create({
   segment: { flexDirection: 'row', borderRadius: 9, padding: 2, marginLeft: 'auto' },
   segItem: { paddingHorizontal: 12, height: 32, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
   segActiveText: { color: '#FFF', fontSize: 13, fontWeight: '600' },
-  emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, paddingHorizontal: 24 },
+  emptyLogo: { width: 72, height: 72, borderRadius: 36, alignItems: 'center', justifyContent: 'center', marginTop: -20, elevation: 4, shadowColor: '#007AFF', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 8 },
+  emptyLogoText: { color: '#FFF', fontSize: 22, fontWeight: '700', letterSpacing: 0.5 },
+  emptyTitle: { fontSize: 18, fontWeight: '600', marginTop: 8 },
+  emptySubtitle: { fontSize: 13 },
+  emptyChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 16 },
+  emptyChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 18, borderWidth: StyleSheet.hairlineWidth },
+  emptyChipText: { fontSize: 12 },
   listContent: { padding: 16 },
   msgBubble: { padding: 12, borderRadius: 18, marginVertical: 6, maxWidth: '85%' },
   msgImage: { width: 200, height: 200, borderRadius: 12, marginBottom: 6 },

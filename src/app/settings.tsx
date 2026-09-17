@@ -14,6 +14,25 @@ function previewNormalize(url: string): string {
   return base.replace(/\/+$/,'');
 }
 
+// 脱敏用户名/邮箱，避免在界面上显示完整账号信息
+function maskUsername(raw: string): string {
+  if (!raw) return '已登录用户';
+  const s = raw.trim();
+  // 邮箱格式：y***x@gmail.com
+  const atIdx = s.indexOf('@');
+  if (atIdx > 0) {
+    const local = s.substring(0, atIdx);
+    const domain = s.substring(atIdx);
+    if (local.length <= 1) return '*' + domain;
+    if (local.length === 2) return local[0] + '*' + domain;
+    return local[0] + '***' + local[local.length - 1] + domain;
+  }
+  // 普通用户名：保留首尾，中间 ***
+  if (s.length <= 2) return '*'.repeat(s.length);
+  if (s.length === 3) return s[0] + '*' + s[2];
+  return s[0] + '***' + s[s.length - 1];
+}
+
 const palettes = {
   light: { bg: '#F5F6F8', card: '#FFFFFF', border: '#E5E5EA', sub: '#8E8E93', inputBg: '#F5F6F8', accent: '#007AFF', accentSoft: '#E8F1FF', danger: '#E53E3E', mask: 'rgba(0,0,0,0.4)', panel: '#FFFFFF', cancelBg: '#F0F0F0', cancelText: '#333333', btnBg: '#F0F2F5', btnText: '#333333' },
   dark: { bg: '#000000', card: '#1C1C1E', border: '#2C2C2E', sub: '#8E8E93', inputBg: '#2C2C2E', accent: '#0A84FF', accentSoft: '#1A3A5C', danger: '#FF6B6B', mask: 'rgba(0,0,0,0.6)', panel: '#1C1C1E', cancelBg: '#2C2C2E', cancelText: '#E5E5EA', btnBg: '#2C2C2E', btnText: '#E5E5EA' },
@@ -238,7 +257,7 @@ export default function SettingsScreen() {
             <ThemedText style={styles.avatarText}>{(config.username || 'U').charAt(0).toUpperCase()}</ThemedText>
           </View>
           <View style={{ flex: 1 }}>
-            <ThemedText type="subtitle">{config.username || '已登录用户'}</ThemedText>
+            <ThemedText type="subtitle">{maskUsername(config.username || '')}</ThemedText>
             <View style={styles.statusRow}>
               <View style={[styles.statusDot, { backgroundColor: '#34C759' }]} />
               <ThemedText style={{ color: C.sub, fontSize: 12 }}>已连接官方 API</ThemedText>
@@ -626,7 +645,7 @@ const styles = StyleSheet.create({
   segActiveText: { color: '#FFF', fontSize: 13, fontWeight: '600' },
   scrollContent: { padding: 16, gap: 12 },
   center: { justifyContent: 'center', alignItems: 'center', gap: 16 },
-  card: { borderRadius: 16, borderWidth: 1, padding: 16, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4 },
+  card: { borderRadius: 16, borderWidth: 1, padding: 16, elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 8 },
   accountRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   avatar: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   avatarText: { color: '#FFF', fontSize: 18, fontWeight: '600' },

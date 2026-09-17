@@ -1,9 +1,18 @@
-import React, { useState, useCallback } from 'react';
-import { StyleSheet, View, Text, TextInput, TouchableOpacity, ScrollView, Modal, Alert, Platform, SafeAreaView, Dimensions, Linking, Clipboard } from 'react-native';
+import React, { useState, useCallback, useMemo } from 'react';
+import { StyleSheet, View, Text, TextInput, TouchableOpacity, ScrollView, Modal, Alert, Platform, SafeAreaView, Dimensions, Linking, Clipboard, ActivityIndicator, Pressable } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useThemeMode, ThemeMode } from '@/hooks/useThemeMode';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
+
+// 和 api.ts 中 normalizeEndpoint 保持一致的前端版本，用于输入时即时预览
+function previewNormalize(url: string): string {
+  if (!url) return '';
+  let base = url.trim().replace(/\/+$/, '');
+  const idx = base.toLowerCase().indexOf('/v1');
+  if (idx > -1) base = base.substring(0, idx);
+  return base.replace(/\/+$/,'');
+}
 
 const palettes = {
   light: { bg: '#F5F6F8', card: '#FFFFFF', border: '#E5E5EA', sub: '#8E8E93', inputBg: '#F5F6F8', accent: '#007AFF', accentSoft: '#E8F1FF', danger: '#E53E3E', mask: 'rgba(0,0,0,0.4)', panel: '#FFFFFF', cancelBg: '#F0F0F0', cancelText: '#333333', btnBg: '#F0F2F5', btnText: '#333333' },
@@ -21,7 +30,15 @@ export default function SettingsScreen() {
   const [voucher, setVoucher] = useState('');
   const [busy, setBusy] = useState(false);
   const [apiForm, setApiForm] = useState({ name: '', endpoint: '', apiKey: '', models: '' });
+  const [showKey, setShowKey] = useState(false);
+  const [testingApi, setTestingApi] = useState<'idle' | 'loading' | 'success' | 'fail'>('idle');
+  const [testMsg, setTestMsg] = useState('');
+  const [testModels, setTestModels] = useState<string[]>([]);
   const router = useRouter();
+
+  // 即时预览清洗后的 endpoint
+  const cleanedEndpoint = useMemo(() => previewNormalize(apiForm.endpoint), [apiForm.endpoint]);
+  const endpointWasCleaned = useMemo(() => apiForm.endpoint.trim() !== '' && cleanedEndpoint !== apiForm.endpoint.trim(), [apiForm.endpoint, cleanedEndpoint]);
 
   useFocusEffect(
     useCallback(() => {
@@ -126,43 +143,69 @@ export default function SettingsScreen() {
     }
   };
 
+  // 独立的测试连接函数
+  const testApiConnection = async () => {
+    if (!apiForm.endpoint.trim() || !apiForm.apiKey.trim()) {
+      setTestingApi('fail');
+      setTestMsg('请先填写 Endpoint 和 API Key');
+      return;
+    }
+    setTestingApi('loading');
+    setTestMsg('正在连接...');
+    setTestModels([]);
+    try {
+      const models = await api.fetchModels(apiForm.endpoint.trim(), apiForm.apiKey.trim());
+      const list: string[] = models?.data?.map((m: any) => m.id).filter(Boolean) || [];
+      if (list.length > 0) {
+        setTestModels(list);
+        setTestingApi('success');
+        setTestMsg(`连接成功 · 获取到 ${list.length} 个模型`);
+      } else {
+        setTestingApi('fail');
+        setTestMsg('连接成功但未返回模型列表');
+      }
+    } catch (e: any) {
+      setTestingApi('fail');
+      const err = e?.message || String(e);
+      setTestMsg(err.includes('abort') ? '请求超时（10s），请检查网络' : `连接失败：${err}`);
+    }
+  };
+
   const handleAddApi = async () => {
     if (!apiForm.endpoint.trim() || !apiForm.apiKey.trim()) {
       Alert.alert('Frapi AI', 'Endpoint 和 API Key 为必填项');
       return;
     }
-    setBusy(true);
-    try {
-      let list: string[] = [];
-      // 先尝试自动获取
+    // 用已测试到的模型，或者手动输入的模型，或者重新获取一次
+    let list: string[] = [...testModels];
+    if (list.length === 0) {
       try {
         const models = await api.fetchModels(apiForm.endpoint.trim(), apiForm.apiKey.trim());
         list = models?.data?.map((m: any) => m.id).filter(Boolean) || [];
-      } catch {
-        // 自动获取失败，使用手动输入
-      }
-      // 合并手动输入的模型（逗号/换行/分号分隔）
-      const manual = (apiForm.models || '')
-        .split(/[,，\n;；]/)
-        .map((s: string) => s.trim())
-        .filter(Boolean);
-      const merged = Array.from(new Set([...list, ...manual]));
-      if (merged.length === 0) {
-        Alert.alert('Frapi AI', '未能自动获取模型，请手动输入模型名称（逗号分隔）');
-        return;
-      }
-      const newApis = [...(config.third_party_apis || []), { name: apiForm.name, endpoint: apiForm.endpoint.trim(), apiKey: apiForm.apiKey.trim(), models: merged }];
-      const newConfig = { ...config, third_party_apis: newApis };
-      await api.saveConfig(newConfig);
-      setConfig(newConfig);
-      setApiForm({ name: '', endpoint: '', apiKey: '', models: '' });
-      setShowAddApi(false);
-      Alert.alert('Frapi AI', '添加成功，共 ' + merged.length + ' 个模型');
-    } catch {
-      Alert.alert('Frapi AI', '添加失败，请检查网络或手动输入模型名称');
-    } finally {
-      setBusy(false);
+      } catch { /* 自动获取失败，使用手动输入 */ }
     }
+    // 合并手动输入的模型
+    const manual = (apiForm.models || '')
+      .split(/[,，\n;；]/)
+      .map((s: string) => s.trim())
+      .filter(Boolean);
+    const merged = Array.from(new Set([...list, ...manual]));
+    if (merged.length === 0) {
+      Alert.alert('Frapi AI', '未能自动获取模型，请手动输入模型名称（逗号分隔）');
+      return;
+    }
+    const finalName = apiForm.name.trim() || '未命名 API';
+    const newApis = [...(config.third_party_apis || []), { name: finalName, endpoint: apiForm.endpoint.trim(), apiKey: apiForm.apiKey.trim(), models: merged }];
+    const newConfig = { ...config, third_party_apis: newApis };
+    await api.saveConfig(newConfig);
+    setConfig(newConfig);
+    setApiForm({ name: '', endpoint: '', apiKey: '', models: '' });
+    setShowKey(false);
+    setTestingApi('idle');
+    setTestMsg('');
+    setTestModels([]);
+    setShowAddApi(false);
+    Alert.alert('Frapi AI', '添加成功，共 ' + merged.length + ' 个模型');
   };
 
   const removeApi = (idx: number) => {
@@ -371,49 +414,202 @@ export default function SettingsScreen() {
         </View>
       </Modal>
 
-      {/* 添加 API 弹窗 */}
-      <Modal visible={showAddApi} animationType="slide" transparent>
+      {/* 添加第三方 API 弹窗 — 商用级分组卡片 + 图标 + 即时反馈 + 连接测试 */}
+      <Modal visible={showAddApi} animationType="slide" transparent onRequestClose={() => setShowAddApi(false)}>
         <View style={[styles.modalMask, { backgroundColor: C.mask }]}>
-          <View style={[styles.modal, { backgroundColor: C.panel }]}>
-            <ThemedText type="subtitle">添加第三方 API</ThemedText>
-            <TextInput
-              style={[styles.input, { backgroundColor: C.inputBg, borderColor: C.border, color: C.cancelText }]}
-              placeholder="API 别名（可选，如 OpenAI）"
-              placeholderTextColor={C.sub}
-              onChangeText={(v) => setApiForm({ ...apiForm, name: v })}
-            />
-            <TextInput
-              style={[styles.input, { backgroundColor: C.inputBg, borderColor: C.border, color: C.cancelText }]}
-              placeholder="Endpoint（如 https://api.openai.com）"
-              placeholderTextColor={C.sub}
-              autoCapitalize="none"
-              onChangeText={(v) => setApiForm({ ...apiForm, endpoint: v })}
-            />
-            <TextInput
-              style={[styles.input, { backgroundColor: C.inputBg, borderColor: C.border, color: C.cancelText }]}
-              placeholder="API Key（sk-...）"
-              placeholderTextColor={C.sub}
-              autoCapitalize="none"
-              secureTextEntry
-              onChangeText={(v) => setApiForm({ ...apiForm, apiKey: v })}
-            />
-            <TextInput
-              style={[styles.input, { backgroundColor: C.inputBg, borderColor: C.border, color: C.cancelText }]}
-              placeholder="模型（可选，自动获取失败时手动填写，逗号分隔）"
-              placeholderTextColor={C.sub}
-              autoCapitalize="none"
-              value={apiForm.models}
-              onChangeText={(v) => setApiForm({ ...apiForm, models: v })}
-            />
-            <View style={styles.modalBtns}>
-              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: C.cancelBg }]} onPress={() => setShowAddApi(false)}>
-                <ThemedText style={{ color: C.cancelText }}>取消</ThemedText>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.modalBtn, { backgroundColor: C.accent }]} onPress={handleAddApi} disabled={busy}>
-                <ThemedText style={styles.btnText}>{busy ? '获取中...' : '保存'}</ThemedText>
-              </TouchableOpacity>
+          <SafeAreaView style={{ flex: 1, justifyContent: 'flex-end' }}>
+            <View style={[styles.apiModal, { backgroundColor: C.panel }]}>
+              {/* 顶部标题栏 */}
+              <View style={styles.apiModalHeader}>
+                <TouchableOpacity onPress={() => setShowAddApi(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <ThemedText style={{ fontSize: 22, color: C.sub, lineHeight: 24 }}>×</ThemedText>
+                </TouchableOpacity>
+                <View style={{ alignItems: 'center' }}>
+                  <ThemedText style={styles.apiModalTitle}>添加第三方 API</ThemedText>
+                  <ThemedText style={[styles.apiModalSubtitle, { color: C.sub }]}>支持 OpenAI 兼容接口</ThemedText>
+                </View>
+                <View style={{ width: 24 }} />
+              </View>
+
+              <ScrollView style={styles.apiModalScroll} contentContainerStyle={{ gap: 14, paddingBottom: 20 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+
+                {/* 📌 基本信息 */}
+                <View style={[styles.apiGroupCard, { backgroundColor: C.bg, borderColor: C.border }]}>
+                  <View style={styles.apiGroupHeader}>
+                    <ThemedText style={styles.apiGroupIcon}>📌</ThemedText>
+                    <ThemedText style={styles.apiGroupTitle}>基本信息</ThemedText>
+                  </View>
+                  <View style={[styles.apiField, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+                    <ThemedText style={[styles.apiFieldIcon, { color: C.sub }]}>🏷️</ThemedText>
+                    <TextInput
+                      style={[styles.apiFieldInput, { color: C.cancelText }]}
+                      placeholder="API 别名（如 MyProvider）"
+                      placeholderTextColor={C.sub}
+                      value={apiForm.name}
+                      onChangeText={(v) => setApiForm({ ...apiForm, name: v })}
+                    />
+                  </View>
+                </View>
+
+                {/* 🔗 连接配置 */}
+                <View style={[styles.apiGroupCard, { backgroundColor: C.bg, borderColor: C.border }]}>
+                  <View style={styles.apiGroupHeader}>
+                    <ThemedText style={styles.apiGroupIcon}>🔗</ThemedText>
+                    <ThemedText style={styles.apiGroupTitle}>连接配置</ThemedText>
+                  </View>
+
+                  {/* Endpoint 输入 */}
+                  <View style={[styles.apiField, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+                    <ThemedText style={[styles.apiFieldIcon, { color: C.sub }]}>🌐</ThemedText>
+                    <TextInput
+                      style={[styles.apiFieldInput, { color: C.cancelText }]}
+                      placeholder="https://api.openai.com"
+                      placeholderTextColor={C.sub}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="url"
+                      value={apiForm.endpoint}
+                      onChangeText={(v) => {
+                        setApiForm({ ...apiForm, endpoint: v });
+                        // endpoint 变动后重置连接状态
+                        if (testingApi !== 'idle') { setTestingApi('idle'); setTestMsg(''); setTestModels([]); }
+                      }}
+                    />
+                  </View>
+                  {/* 清洗预览提示 */}
+                  {endpointWasCleaned && (
+                    <View style={[styles.apiPreviewHint, { backgroundColor: C.accentSoft }]}>
+                      <ThemedText style={[styles.apiPreviewIcon, { color: C.accent }]}>✨</ThemedText>
+                      <View style={{ flex: 1 }}>
+                        <ThemedText style={{ fontSize: 11, color: C.accent, fontWeight: '500' }}>已自动清洗 Endpoint</ThemedText>
+                        <ThemedText style={{ fontSize: 11, color: C.sub, marginTop: 2 }} numberOfLines={1}>
+                          {cleanedEndpoint}
+                        </ThemedText>
+                      </View>
+                    </View>
+                  )}
+                  {!endpointWasCleaned && apiForm.endpoint.trim() && !apiForm.endpoint.trim().startsWith('http') && (
+                    <View style={[styles.apiPreviewHint, { backgroundColor: '#FFF3E0' }]}>
+                      <ThemedText style={{ fontSize: 11, color: '#F57C02', flex: 1 }}>⚠️ Endpoint 需以 https:// 开头</ThemedText>
+                    </View>
+                  )}
+
+                  {/* API Key 输入 */}
+                  <View style={[styles.apiField, { backgroundColor: C.inputBg, borderColor: C.border, marginTop: 10 }]}>
+                    <ThemedText style={[styles.apiFieldIcon, { color: C.sub }]}>🔑</ThemedText>
+                    <TextInput
+                      style={[styles.apiFieldInput, { color: C.cancelText }]}
+                      placeholder="sk-..."
+                      placeholderTextColor={C.sub}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      secureTextEntry={!showKey}
+                      value={apiForm.apiKey}
+                      onChangeText={(v) => {
+                        setApiForm({ ...apiForm, apiKey: v });
+                        if (testingApi !== 'idle') { setTestingApi('idle'); setTestMsg(''); setTestModels([]); }
+                      }}
+                    />
+                    <TouchableOpacity onPress={() => setShowKey(!showKey)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                      <ThemedText style={{ fontSize: 16, color: C.sub }}>{showKey ? '🙈' : '👁️'}</ThemedText>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* 测试连接按钮 + 状态指示 */}
+                  <TouchableOpacity
+                    style={[
+                      styles.apiTestBtn,
+                      { borderColor: testingApi === 'loading' ? C.accent : C.border },
+                      testingApi === 'success' && { borderColor: '#34C759', backgroundColor: 'rgba(52,199,89,0.08)' },
+                      testingApi === 'fail' && { borderColor: C.danger, backgroundColor: testingApi === 'fail' ? 'rgba(229,62,62,0.06)' : undefined },
+                    ]}
+                    onPress={testApiConnection}
+                    disabled={testingApi === 'loading'}
+                    activeOpacity={0.7}
+                  >
+                    {testingApi === 'loading' ? (
+                      <ActivityIndicator size="small" color={C.accent} />
+                    ) : (
+                      <ThemedText style={{ fontSize: 14 }}>
+                        {testingApi === 'success' ? '✅' : testingApi === 'fail' ? '❌' : '🔗'}
+                      </ThemedText>
+                    )}
+                    <ThemedText style={{ fontSize: 13, fontWeight: '500', marginLeft: 6, color: testingApi === 'success' ? '#34C759' : testingApi === 'fail' ? C.danger : C.cancelText }}>
+                      {testingApi === 'loading' ? '测试中...' : testingApi === 'success' ? testMsg : testingApi === 'fail' ? testMsg || '连接失败' : '测试连接'}
+                    </ThemedText>
+                  </TouchableOpacity>
+                </View>
+
+                {/* 🤖 模型配置 */}
+                <View style={[styles.apiGroupCard, { backgroundColor: C.bg, borderColor: C.border }]}>
+                  <View style={styles.apiGroupHeader}>
+                    <ThemedText style={styles.apiGroupIcon}>🤖</ThemedText>
+                    <ThemedText style={styles.apiGroupTitle}>模型配置</ThemedText>
+                    {testModels.length > 0 && (
+                      <View style={[styles.modelBadge, { backgroundColor: C.accentSoft }]}>
+                        <ThemedText style={{ color: C.accent, fontSize: 11 }}>{testModels.length} 个已获取</ThemedText>
+                      </View>
+                    )}
+                  </View>
+                  <View style={[styles.apiField, { backgroundColor: C.inputBg, borderColor: C.border, minHeight: 80, alignItems: 'flex-start' }]}>
+                    <ThemedText style={[styles.apiFieldIcon, { color: C.sub, marginTop: 12 }]}>📋</ThemedText>
+                    <TextInput
+                      style={[styles.apiFieldInput, { color: C.cancelText, flex: 1, paddingVertical: 10 }]}
+                      placeholder={testingApi === 'success' ? '已自动获取模型，可额外补充（逗号分隔）' : '自动获取失败时，请手动输入模型名（逗号分隔）'}
+                      placeholderTextColor={C.sub}
+                      autoCapitalize="none"
+                      multiline
+                      value={apiForm.models}
+                      onChangeText={(v) => setApiForm({ ...apiForm, models: v })}
+                    />
+                  </View>
+                  {/* 已获取模型预览胶囊列表 */}
+                  {testModels.length > 0 && (
+                    <View style={styles.apiModelChips}>
+                      {testModels.slice(0, 8).map((m) => (
+                        <View key={m} style={[styles.apiChip, { backgroundColor: C.card, borderColor: C.border }]}>
+                          <ThemedText style={{ fontSize: 11, color: C.sub }} numberOfLines={1}>{m}</ThemedText>
+                        </View>
+                      ))}
+                      {testModels.length > 8 && (
+                        <View style={[styles.apiChip, { backgroundColor: C.accentSoft }]}>
+                          <ThemedText style={{ fontSize: 11, color: C.accent }}>+{testModels.length - 8}</ThemedText>
+                        </View>
+                      )}
+                    </View>
+                  )}
+                </View>
+              </ScrollView>
+
+              {/* 底部操作按钮 */}
+              <View style={[styles.apiModalFooter, { borderTopColor: C.border, backgroundColor: C.panel }]}>
+                <TouchableOpacity
+                  style={[styles.apiFooterBtn, { backgroundColor: C.cancelBg }]}
+                  onPress={() => {
+                    setShowAddApi(false);
+                    setTestingApi('idle');
+                    setTestMsg('');
+                    setTestModels([]);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <ThemedText style={{ color: C.cancelText, fontWeight: '500' }}>取消</ThemedText>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.apiFooterBtn,
+                    { backgroundColor: C.accent, shadowColor: C.accent, shadowOpacity: 0.3, shadowOffset: { width: 0, height: 2 }, shadowRadius: 4, elevation: 3 },
+                    (!apiForm.endpoint.trim() || !apiForm.apiKey.trim()) && { opacity: 0.4 },
+                  ]}
+                  onPress={handleAddApi}
+                  disabled={busy}
+                  activeOpacity={0.7}
+                >
+                  <ThemedText style={{ color: '#FFF', fontWeight: '600' }}>{busy ? '保存中...' : '保存 API'}</ThemedText>
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
+          </SafeAreaView>
         </View>
       </Modal>
     </ScrollView>
@@ -470,4 +666,41 @@ const styles = StyleSheet.create({
   buyIcon: { fontSize: 22 },
   buyLabel: { fontSize: 13, fontWeight: '600' },
   buyHint: { fontSize: 11 },
+
+  // ===== 添加第三方 API 弹窗 =====
+  apiModal: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 8,
+    paddingBottom: 0,
+    maxHeight: '88%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 10,
+  },
+  apiModalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 8 },
+  apiModalTitle: { fontSize: 16, fontWeight: '700' },
+  apiModalSubtitle: { fontSize: 11, marginTop: 2 },
+  apiModalScroll: { paddingHorizontal: 16 },
+  apiModalFooter: { flexDirection: 'row', gap: 10, paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: StyleSheet.hairlineWidth },
+  apiFooterBtn: { flex: 1, paddingVertical: 13, borderRadius: 12, alignItems: 'center' },
+
+  apiGroupCard: { borderRadius: 14, borderWidth: 1, padding: 14 },
+  apiGroupHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
+  apiGroupIcon: { fontSize: 15 },
+  apiGroupTitle: { fontSize: 13, fontWeight: '600', flex: 1 },
+
+  apiField: { flexDirection: 'row', alignItems: 'center', borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, minHeight: 44 },
+  apiFieldIcon: { fontSize: 15, marginRight: 8 },
+  apiFieldInput: { flex: 1, fontSize: 14, paddingVertical: 10 },
+
+  apiPreviewHint: { flexDirection: 'row', alignItems: 'center', marginTop: 8, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8, gap: 6 },
+  apiPreviewIcon: { fontSize: 13 },
+
+  apiTestBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 14, paddingVertical: 11, borderRadius: 10, borderWidth: 1 },
+
+  apiModelChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 },
+  apiChip: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, maxWidth: 140 },
 });

@@ -2,6 +2,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const BASE_API_URL = "https://api.frapi.kdns.fr";
 
+// 自动清洗 endpoint：去掉尾部斜杠 + /v1 及其后的路径，返回 base URL
+function normalizeEndpoint(url: string): string {
+  if (!url) return '';
+  let base = url.trim().replace(/\/+$/,'');
+  const idx = base.toLowerCase().indexOf('/v1');
+  if (idx > -1) base = base.substring(0, idx);
+  return base.replace(/\/+$/,'');
+}
+
 export const api = {
   // 登录
   async login(credentials: any) {
@@ -120,10 +129,21 @@ export const api = {
   },
 
   async fetchModels(endpoint: string, apiKey: string) {
-    const response = await fetch(`${endpoint}/v1/models`, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
-    });
-    return response.json();
+    const base = normalizeEndpoint(endpoint);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(`${base}/v1/models`, {
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    } catch (e) {
+      clearTimeout(timer);
+      throw e;
+    }
   },
 
   async sendChatRequest(args: any) {
@@ -152,7 +172,8 @@ export const api = {
   // 流式对话（SSE），onDelta 接收增量文本，onDone 接收最终 usage，signal 用于中断
   async sendChatStream(args: any, onDelta: (text: string) => void, onDone: (usage: any) => void, signal?: AbortSignal) {
     const authHeader = args.token ? (args.token.startsWith('Bearer ') ? args.token : `Bearer ${args.token}`) : '';
-    const response = await fetch(`${args.endpoint}/v1/chat/completions`, {
+    const base = normalizeEndpoint(args.endpoint);
+    const response = await fetch(`${base}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': authHeader,

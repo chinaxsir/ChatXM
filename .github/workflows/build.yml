@@ -89,7 +89,15 @@ jobs:
       - name: Build unsigned .app (TrollStore compatible)
         run: |
           cd ios
-          xcodebuild -workspace ChatXM.xcworkspace -scheme ChatXM -configuration Release -sdk iphoneos -arch arm64 -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" ONLY_ACTIVE_ARCH=YES 2>&1 | tail -80
+          set +e
+          xcodebuild -workspace ChatXM.xcworkspace -scheme ChatXM -configuration Release -sdk iphoneos -arch arm64 -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" ONLY_ACTIVE_ARCH=YES > xcodebuild.log 2>&1
+          EXIT_CODE=$?
+          echo "=== EXIT CODE: $EXIT_CODE ==="
+          echo "=== ERRORS (if any) ==="
+          grep -i "error:" xcodebuild.log | head -60 || true
+          echo "=== LAST 40 LINES ==="
+          tail -40 xcodebuild.log
+          exit $EXIT_CODE
       - name: Package unsigned IPA
         run: |
           mkdir -p Payload

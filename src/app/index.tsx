@@ -1,24 +1,35 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { StyleSheet, View, Text, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, SafeAreaView, Modal, Alert, Image, useColorScheme } from 'react-native';
-import { Picker } from '@react-native-picker/picker';
-import { useFocusEffect } from 'expo-router';
+import { StyleSheet, View, Text, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, SafeAreaView, Modal, Alert, Image, Pressable, Animated } from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useThemeMode } from '@/hooks/useThemeMode';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import * as SpeechRecognition from 'expo-speech-recognition';
+import { useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
+import * as Clipboard from 'expo-clipboard';
+import Markdown from 'react-native-markdown-display';
 import LoginScreen from './login';
 
 const BUILTIN_ENDPOINT = 'https://api.frapi.kdns.fr';
 
-type Msg = { role: string; content: string; image?: string | null };
+type Msg = {
+  role: string;
+  content: string;
+  image?: string | null;
+  fileName?: string | null;
+};
 
 const palettes = {
-  light: { bg: '#F8F9FA', headerBg: '#FFFFFF', border: '#E5E5EA', sub: '#8E8E93', btnBg: '#F0F2F5', btnText: '#333333', accent: '#007AFF', accentSoft: '#E8F1FF', inputBg: '#F0F0F0', aiBubble: '#E9E9EB', aiText: '#000000', panelBg: '#FFFFFF', danger: '#E53E3E' },
-  dark: { bg: '#000000', headerBg: '#1C1C1E', border: '#2C2C2E', sub: '#8E8E93', btnBg: '#2C2C2E', btnText: '#E5E5EA', accent: '#0A84FF', accentSoft: '#1A3A5C', inputBg: '#1C1C1E', aiBubble: '#2C2C2E', aiText: '#FFFFFF', panelBg: '#1C1C1E', danger: '#FF6B6B' },
+  light: { bg: '#F5F6F8', headerBg: '#FFFFFF', border: '#E5E5EA', sub: '#8E8E93', btnBg: '#F0F2F5', btnText: '#333333', accent: '#007AFF', accentSoft: '#E8F1FF', inputBg: '#F0F0F0', aiBubble: '#E9E9EB', aiText: '#000000', panelBg: '#FFFFFF', danger: '#E53E3E', chip: '#E8F1FF' },
+  dark: { bg: '#000000', headerBg: '#1C1C1E', border: '#2C2C2E', sub: '#8E8E93', btnBg: '#2C2C2E', btnText: '#E5E5EA', accent: '#0A84FF', accentSoft: '#1A3A5C', inputBg: '#1C1C1E', aiBubble: '#2C2C2E', aiText: '#FFFFFF', panelBg: '#1C1C1E', danger: '#FF6B6B', chip: '#1A3A5C' },
 };
 
 export default function ChatScreen() {
-  const scheme = useColorScheme();
+  const { scheme } = useThemeMode();
   const C = palettes[scheme === 'dark' ? 'dark' : 'light'];
   const [config, setConfig] = useState<any>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -26,10 +37,36 @@ export default function ChatScreen() {
   const [input, setInput] = useState('');
   const [model, setModel] = useState('frapi');
   const [image, setImage] = useState<string | null>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [fileContent, setFileContent] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showModel, setShowModel] = useState(false);
+  const [actionIdx, setActionIdx] = useState<number | null>(null);
+  const [searchKw, setSearchKw] = useState('');
+  const [listening, setListening] = useState(false);
   const [sessions, setSessions] = useState<any[]>([]);
   const listRef = useRef<FlatList<Msg>>(null);
+  const router = useRouter();
+  // 流式输出相关 ref
+  const aiTextRef = useRef('');
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const aiMsgKeyRef = useRef<string>('');
+  const abortRef = useRef<AbortController | null>(null);
+  // 思考中三点动画
+  const dotAnims = useRef([new Animated.Value(0.3), new Animated.Value(0.3), new Animated.Value(0.3)]).current;
+
+  useEffect(() => {
+    if (!sending) return;
+    const loops = dotAnims.map((v, i) =>
+      Animated.loop(Animated.sequence([
+        Animated.timing(v, { toValue: 1, duration: 400, delay: i * 150, useNativeDriver: true }),
+        Animated.timing(v, { toValue: 0.3, duration: 400, useNativeDriver: true }),
+      ]))
+    );
+    loops.forEach(l => l.start());
+    return () => loops.forEach(l => l.stop());
+  }, [sending, dotAnims]);
 
   useFocusEffect(
     useCallback(() => {
@@ -62,6 +99,8 @@ export default function ChatScreen() {
     setMessages([]);
     setInput('');
     setImage(null);
+    setFileName(null);
+    setFileContent(null);
     setShowHistory(false);
   };
 
@@ -116,6 +155,46 @@ export default function ChatScreen() {
     }
   };
 
+  const pickFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['image/*', 'text/plain', 'application/pdf', 'application/json', 'text/markdown', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      const file = result.assets[0];
+      const mime = file.mimeType || '';
+      if (mime.startsWith('image/')) {
+        // 图片走图片通道
+        let dataUrl = '';
+        try {
+          const rendered = await ImageManipulator.manipulate(file.uri).resize({ width: 1024 }).renderAsync();
+          const saved = await rendered.saveAsync({ compress: 0.6, format: SaveFormat.JPEG, base64: true });
+          dataUrl = `data:image/jpeg;base64,${saved.base64}`;
+        } catch {
+          dataUrl = file.uri;
+        }
+        setImage(dataUrl);
+      } else {
+        // 文本类文件：读取内容
+        const textExts = ['.txt', '.md', '.json', '.js', '.ts', '.tsx', '.jsx', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.css', '.html', '.xml', '.yaml', '.yml', '.sh', '.log'];
+        const isText = textExts.some(ext => file.name.toLowerCase().endsWith(ext)) || mime.startsWith('text/');
+        let content = '';
+        if (isText) {
+          try {
+            content = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.UTF8 });
+          } catch {
+            content = '';
+          }
+        }
+        setFileName(file.name);
+        setFileContent(content);
+      }
+    } catch (e: any) {
+      alert('选择文件失败: ' + (e?.message || e));
+    }
+  };
+
   const resolveTarget = () => {
     if (model.startsWith('tp:')) {
       const [, idxStr, ...rest] = model.split(':');
@@ -125,63 +204,223 @@ export default function ChatScreen() {
     return { endpoint: config?.builtin_endpoint || BUILTIN_ENDPOINT, token: config?.primary_api_key, model };
   };
 
+  // 组装最终提示文本（含文件内容）
+  const buildPrompt = () => {
+    let prompt = input;
+    if (fileName) {
+      const tag = `\n[附件: ${fileName}]\n${fileContent || ''}\n`;
+      prompt = prompt ? `${prompt}\n${tag}` : tag.trim();
+    }
+    return prompt;
+  };
+
   const sendMessage = async () => {
     if (sending) return;
-    if (!input.trim() && !image) return;
+    if (!input.trim() && !image && !fileName) return;
     if (!config) return;
+
+    // 余额检查：新注册用户有 $1 额度，余额耗尽则拦截
+    const balance = Number(config.balance ?? 0);
+    if (config.balance != null && balance <= 0) {
+      alert('余额不足，请前往「设置」充值后继续使用');
+      return;
+    }
+
     const target = resolveTarget();
     if (!target.token) {
       alert('未配置 API Key，请重新登录或在设置中添加 API');
       return;
     }
 
-    const userMsg: Msg = { role: 'user', content: input, image };
-    const newMessages = [...messages, userMsg];
+    const promptText = buildPrompt();
+    const userMsg: Msg = { role: 'user', content: input, image, fileName };
+    const aiMsgKey = 'ai_' + Date.now();
+    const aiMsg: Msg = { role: 'assistant', content: '' };
+    const newMessages = [...messages, userMsg, aiMsg];
+    aiMsgKeyRef.current = aiMsgKey;
+    aiTextRef.current = '';
     setMessages(newMessages);
     setInput('');
     setImage(null);
+    setFileName(null);
+    setFileContent(null);
     setSending(true);
 
-    try {
-      const response = await api.sendChatRequest({
-        endpoint: target.endpoint,
-        token: target.token,
-        model: target.model,
-        prompt: userMsg.content,
-        image: userMsg.image || undefined,
-        history: JSON.stringify(messages)
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    // 节流 flush：累积文本后每 50ms 更新一次 UI，避免高频 setState
+    const flush = () => {
+      setMessages(prev => {
+        const idx = prev.length - 1;
+        if (idx < 0) return prev;
+        const updated = [...prev];
+        updated[idx] = { ...updated[idx], content: aiTextRef.current };
+        return updated;
       });
+    };
+    const scheduleFlush = () => {
+      if (flushTimerRef.current) return;
+      flushTimerRef.current = setTimeout(() => {
+        flushTimerRef.current = null;
+        flush();
+      }, 50);
+    };
 
-      if (response?.choices?.[0]?.message?.content) {
-        const updatedMessages = [...newMessages, { role: 'assistant', content: response.choices[0].message.content }];
-        await api.saveHistory(sessionId, updatedMessages);
-        setMessages(updatedMessages);
+    try {
+      await api.sendChatStream(
+        {
+          endpoint: target.endpoint,
+          token: target.token,
+          model: target.model,
+          prompt: promptText,
+          image: image || undefined,
+          history: JSON.stringify(messages),
+        },
+        (delta) => {
+          aiTextRef.current += delta;
+          scheduleFlush();
+        },
+        async (usage) => {
+          // 最终 flush
+          if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
+          flush();
 
-        const usage: any = response.usage || {};
-        const day = new Date().toISOString().slice(0, 10);
-        const u = config.usage || { total: 0, prompt: 0, completion: 0, count: 0, daily: {} as any };
-        const total = usage.total_tokens ?? (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
-        const d = u.daily[day] || { tokens: 0, count: 0 };
-        const newConfig = {
-          ...config,
-          usage: {
-            total: (u.total || 0) + total,
-            prompt: (u.prompt || 0) + (usage.prompt_tokens || 0),
-            completion: (u.completion || 0) + (usage.completion_tokens || 0),
-            count: (u.count || 0) + 1,
-            daily: { ...u.daily, [day]: { tokens: d.tokens + total, count: d.count + 1 } },
-          },
-        };
-        await api.saveConfig(newConfig);
-        setConfig(newConfig);
-      } else {
-        throw new Error(JSON.stringify(response));
-      }
+          let total = usage?.total_tokens ?? (usage?.prompt_tokens || 0) + (usage?.completion_tokens || 0);
+          // 兜底：后端未返回 usage 时，按回复字符数估算 tokens（中文约1字1token，英文约4字符1token）
+          if (total === 0 && aiTextRef.current) {
+            const text = aiTextRef.current;
+            const chinese = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
+            const others = text.length - chinese;
+            const estCompletion = chinese + Math.ceil(others / 4);
+            const estPrompt = Math.ceil((promptText.length) / 3);
+            total = estPrompt + estCompletion;
+          }
+          // 保存历史
+          const finalMessages = [...newMessages];
+          finalMessages[finalMessages.length - 1] = { role: 'assistant', content: aiTextRef.current };
+          await api.saveHistory(sessionId, finalMessages);
+
+          // 累计消耗统计 + 本地估算扣费
+          const day = new Date().toISOString().slice(0, 10);
+          const u = config.usage || { total: 0, prompt: 0, completion: 0, count: 0, daily: {} as any };
+          const d = u.daily[day] || { tokens: 0, count: 0 };
+          // 估算扣费金额（按综合 $2 / 1M tokens 估算，仅本地即时反馈，最终以服务端为准）
+          const estimatedCost = total * 0.000002;
+          const newBalance = config.balance != null ? Math.max(0, Number(config.balance) - estimatedCost) : config.balance;
+          const newConfig = {
+            ...config,
+            balance: newBalance,
+            usage: {
+              total: (u.total || 0) + total,
+              prompt: (u.prompt || 0) + (usage?.prompt_tokens || 0),
+              completion: (u.completion || 0) + (usage?.completion_tokens || 0),
+              count: (u.count || 0) + 1,
+              daily: { ...u.daily, [day]: { tokens: d.tokens + total, count: d.count + 1 } },
+            },
+          };
+          await api.saveConfig(newConfig);
+          setConfig(newConfig);
+
+          // 同步服务端真实余额
+          if (config.session_token) {
+            try {
+              const r = await api.refreshAccount(config.session_token);
+              const realBalance = r?.data?.balance ?? r?.balance ?? r?.data?.user?.balance;
+              if (realBalance != null) {
+                const synced = { ...newConfig, balance: realBalance };
+                await api.saveConfig(synced);
+                setConfig(synced);
+              }
+            } catch { /* 同步失败时保留本地估算值 */ }
+          }
+          abortRef.current = null;
+        },
+        controller.signal
+      );
     } catch (e: any) {
-      alert('对话请求失败: ' + (e?.message || e));
-      console.error(e);
+      if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
+      const aborted = e?.name === 'AbortError' || abortRef.current?.signal.aborted;
+      abortRef.current = null;
+      const partial = aiTextRef.current;
+      if (partial) {
+        const finalMessages = [...newMessages];
+        finalMessages[finalMessages.length - 1] = { role: 'assistant', content: partial };
+        await api.saveHistory(sessionId, finalMessages);
+      } else {
+        setMessages(prev => prev.slice(0, -1));
+      }
+      if (!aborted) {
+        alert('对话请求失败: ' + (e?.message || e));
+        console.error(e);
+      }
     } finally {
       setSending(false);
+    }
+  };
+
+  const stopStreaming = () => { if (abortRef.current) abortRef.current.abort(); };
+
+  const closeAction = () => setActionIdx(null);
+  const copyMsg = async () => {
+    if (actionIdx == null) return;
+    const text = messages[actionIdx]?.content || '';
+    await Clipboard.setStringAsync(text);
+    closeAction();
+  };
+  const editMsg = () => {
+    if (actionIdx == null) return;
+    const m = messages[actionIdx];
+    if (m?.role === 'user' && m.content) {
+      setInput(m.content);
+      setActionIdx(null);
+    }
+  };
+  const deleteMsg = () => {
+    if (actionIdx == null) return;
+    const updated = messages.filter((_, i) => i !== actionIdx);
+    setMessages(updated);
+    api.saveHistory(sessionId, updated);
+    setActionIdx(null);
+  };
+
+  // 导出当前会话为文本
+  const exportSession = async () => {
+    if (messages.length === 0) { alert('当前会话无内容可导出'); return; }
+    const text = messages.map(m => {
+      const role = m.role === 'user' ? '我' : 'AI';
+      return `[${role}]\n${m.content}`;
+    }).join('\n\n');
+    const full = `Frapi AI 会话导出\n时间: ${new Date().toLocaleString()}\n模型: ${model === 'frapi' ? '官方 API' : model}\n\n${text}`;
+    await Clipboard.setStringAsync(full);
+    alert('会话内容已复制到剪贴板，可粘贴到任意位置保存');
+  };
+
+  // 语音识别事件监听
+  useSpeechRecognitionEvent('result', (event: any) => {
+    const transcript = event?.results?.[0]?.transcript;
+    if (!transcript) return;
+    if (event.isFinal) {
+      setInput((prev) => (prev ? prev + ' ' + transcript : transcript));
+    }
+  });
+  useSpeechRecognitionEvent('error', () => setListening(false));
+  useSpeechRecognitionEvent('end', () => setListening(false));
+
+  // 语音输入
+  const toggleVoice = async () => {
+    if (listening) {
+      SpeechRecognition.ExpoSpeechRecognitionModule.stop();
+      setListening(false);
+      return;
+    }
+    try {
+      const perm = await SpeechRecognition.ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!perm.granted) { alert('需要麦克风权限'); return; }
+      setListening(true);
+      SpeechRecognition.ExpoSpeechRecognitionModule.start({ lang: 'zh-CN', interimResults: true });
+    } catch {
+      setListening(false);
     }
   };
 
@@ -194,57 +433,146 @@ export default function ChatScreen() {
     return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
   }
 
+  const thirdPartyModels: { label: string; value: string }[] = [];
+  (config?.third_party_apis || []).forEach((tp: any, idx: number) => {
+    (tp.models || []).forEach((m: string) => {
+      thirdPartyModels.push({ label: `${tp.name || 'API'} · ${m}`, value: `tp:${idx}:${m}` });
+    });
+  });
+
+  const currentLabel = model === 'frapi' ? '官方 API' : (thirdPartyModels.find(m => m.value === model)?.label || '官方 API');
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: C.bg }]}>
+      {/* 顶栏：历史 | 模型选择 | 新对话 | 对话/设置 切换 */}
       <View style={[styles.header, { backgroundColor: C.headerBg, borderBottomColor: C.border }]}>
-        <TouchableOpacity style={[styles.headerBtn, { backgroundColor: C.btnBg }]} onPress={() => { loadSessions(); setShowHistory(true); }}>
-          <ThemedText style={[styles.headerBtnText, { color: C.btnText }]}>☰ 历史</ThemedText>
+        <TouchableOpacity style={[styles.iconBtn, { backgroundColor: C.btnBg }]} onPress={() => { loadSessions(); setShowHistory(true); }}>
+          <Text style={[styles.iconBtnText, { color: C.btnText }]}>☰</Text>
         </TouchableOpacity>
-        <View style={styles.modelPicker}>
-          <Picker selectedValue={model} onValueChange={(item) => setModel(item)} style={styles.picker}>
-            <Picker.Item label="官方 API" value="frapi" />
-            {(config?.third_party_apis || []).map((tp: any, idx: number) =>
-              (tp.models || []).map((m: string) => (
-                <Picker.Item key={`tp-${idx}-${m}`} label={`${tp.name || 'API'} · ${m}`} value={`tp:${idx}:${m}`} />
-              ))
-            )}
-          </Picker>
+
+        {/* 模型选择：胶囊，收窄宽度 */}
+        <Pressable
+          style={[styles.modelChip, { backgroundColor: thirdPartyModels.length > 0 ? C.chip : C.btnBg }]}
+          onPress={() => thirdPartyModels.length > 0 ? setShowModel(true) : null}
+        >
+          <ThemedText style={[styles.modelChipText, { color: thirdPartyModels.length > 0 ? C.accent : C.btnText }]} numberOfLines={1}>
+            {currentLabel}
+          </ThemedText>
+          {thirdPartyModels.length > 0 && <Text style={[styles.chevron, { color: C.accent }]}>▾</Text>}
+        </Pressable>
+
+        <TouchableOpacity style={[styles.iconBtn, { backgroundColor: C.accentSoft }]} onPress={newChat}>
+          <Text style={[styles.iconBtnText, { color: C.accent, fontWeight: '700' }]}>＋</Text>
+        </TouchableOpacity>
+
+        {/* 对话/设置 分段切换 */}
+        <View style={[styles.segment, { backgroundColor: C.btnBg }]}>
+          <TouchableOpacity style={[styles.segItem, { backgroundColor: C.accent }]}>
+            <ThemedText style={styles.segActiveText}>对话</ThemedText>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.segItem} onPress={() => router.replace('/settings')}>
+            <ThemedText style={{ color: C.btnText }}>设置</ThemedText>
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={[styles.headerBtn, { backgroundColor: C.accentSoft }]} onPress={newChat}>
-          <ThemedText style={[styles.newChatBtnText, { color: C.accent }]}>＋ 新对话</ThemedText>
-        </TouchableOpacity>
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.content}>
-        <FlatList
-          ref={listRef}
-          data={messages}
-          keyExtractor={(_, index) => index.toString()}
-          contentContainerStyle={styles.listContent}
-          onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
-          renderItem={({ item }) => (
-            <View style={[styles.msgBubble, item.role === 'user'
-              ? { backgroundColor: C.accent }
-              : { backgroundColor: C.aiBubble }]}>
-              {!!item.image && <Image source={{ uri: item.image }} style={styles.msgImage} resizeMode="cover" />}
-              {!!item.content && (
-                <ThemedText style={[styles.msgText, { color: item.role === 'user' ? '#FFFFFF' : C.aiText }]}>
-                  {item.content}
-                </ThemedText>
-              )}
-            </View>
-          )}
-        />
+        {messages.length === 0 ? (
+          <View style={styles.emptyState}>
+            <ThemedText style={{ color: C.sub, fontSize: 16 }}>选择模型，开始对话</ThemedText>
+          </View>
+        ) : (
+          <FlatList
+            ref={listRef}
+            data={messages}
+            keyExtractor={(_, index) => index.toString()}
+            contentContainerStyle={styles.listContent}
+            onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
+            renderItem={({ item, index }) => (
+              <TouchableOpacity
+                onLongPress={() => setActionIdx(index)}
+                activeOpacity={0.7}
+              >
+              <View style={[styles.msgBubble, item.role === 'user'
+                ? { backgroundColor: C.accent, alignSelf: 'flex-end' }
+                : { backgroundColor: C.aiBubble, alignSelf: 'flex-start' }]}>
+                {!!item.fileName && (
+                  <View style={styles.fileBadge}>
+                    <Text style={styles.fileIcon}>📎</Text>
+                    <ThemedText style={[styles.fileName, { color: item.role === 'user' ? '#FFF' : C.aiText }]} numberOfLines={1}>{item.fileName}</ThemedText>
+                  </View>
+                )}
+                {!!item.image && <Image source={{ uri: item.image }} style={styles.msgImage} resizeMode="cover" />}
+                {!!item.content && (
+                  item.role === 'assistant' ? (
+                    <Markdown
+                      style={{
+                        body: { color: C.aiText, fontSize: 15, lineHeight: 21 },
+                        code_inline: { backgroundColor: C.inputBg, color: C.aiText, paddingHorizontal: 4, borderRadius: 4, fontSize: 13 },
+                        code_block: { backgroundColor: C.inputBg, color: C.aiText, padding: 10, borderRadius: 8, fontSize: 13 },
+                        fence: { backgroundColor: C.inputBg, color: C.aiText, padding: 10, borderRadius: 8 },
+                        paragraph: { marginVertical: 4 },
+                        heading1: { color: C.aiText, fontSize: 20, fontWeight: '700', marginVertical: 6 },
+                        heading2: { color: C.aiText, fontSize: 17, fontWeight: '700', marginVertical: 5 },
+                        heading3: { color: C.aiText, fontSize: 15, fontWeight: '600', marginVertical: 4 },
+                        list: { marginVertical: 4 },
+                        bullet_list: { marginVertical: 4 },
+                        ordered_list: { marginVertical: 4 },
+                        list_item: { color: C.aiText, marginVertical: 2 },
+                        blockquote: { borderLeftWidth: 3, borderLeftColor: C.accent, paddingLeft: 10, color: C.sub, marginVertical: 4 },
+                        link: { color: C.accent },
+                        hr: { backgroundColor: C.border, height: 1, marginVertical: 8 },
+                        table: { borderWidth: 1, borderColor: C.border, marginVertical: 6 },
+                        th: { backgroundColor: C.inputBg, color: C.aiText, padding: 6, fontWeight: '600' },
+                        td: { color: C.aiText, padding: 6, borderTopWidth: 1, borderTopColor: C.border },
+                      }}
+                    >
+                      {item.content}
+                    </Markdown>
+                  ) : (
+                    <ThemedText style={[styles.msgText, { color: '#FFFFFF' }]}>
+                      {item.content}
+                    </ThemedText>
+                  )
+                )}
+                {!item.content && item.role === 'assistant' && sending && (
+                  <View style={styles.thinking}>
+                    <Animated.View style={[styles.thinkDot, { backgroundColor: C.accent, opacity: dotAnims[0] }]} />
+                    <Animated.View style={[styles.thinkDot, { backgroundColor: C.accent, opacity: dotAnims[1] }]} />
+                    <Animated.View style={[styles.thinkDot, { backgroundColor: C.accent, opacity: dotAnims[2] }]} />
+                    <ThemedText style={[styles.thinkText, { color: C.sub }]}>思考中…</ThemedText>
+                  </View>
+                )}
+              </View>
+              </TouchableOpacity>
+            )}
+          />
+        )}
 
-        {!!image && (
+        {/* 待发送附件预览 */}
+        {(image || fileName) && (
           <View style={[styles.previewBar, { backgroundColor: C.headerBg }]}>
-            <Image source={{ uri: image }} style={styles.previewThumb} resizeMode="cover" />
-            <TouchableOpacity style={styles.previewRemove} onPress={() => setImage(null)}>
-              <Text style={styles.previewRemoveText}>✕</Text>
-            </TouchableOpacity>
+            {!!image && (
+              <View style={styles.previewItem}>
+                <Image source={{ uri: image }} style={styles.previewThumb} resizeMode="cover" />
+                <TouchableOpacity style={styles.previewRemove} onPress={() => setImage(null)}>
+                  <Text style={styles.previewRemoveText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            {!!fileName && (
+              <View style={[styles.filePreview, { backgroundColor: C.inputBg }]}>
+                <Text style={styles.fileIcon}>📄</Text>
+                <ThemedText style={[styles.fileName, { color: C.aiText, flex: 1 }]} numberOfLines={1}>{fileName}</ThemedText>
+                <TouchableOpacity onPress={() => { setFileName(null); setFileContent(null); }}>
+                  <Text style={{ color: C.danger }}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         )}
 
+        {/* 输入区：拍照 | 文件 | 输入框 | 发送 */}
         <View style={[styles.inputBar, { backgroundColor: C.headerBg, borderTopColor: C.border }]}>
           {Platform.OS !== 'web' && (
             <TouchableOpacity style={styles.attachBtn} onPress={() => pickImage(true)}>
@@ -254,6 +582,15 @@ export default function ChatScreen() {
           <TouchableOpacity style={styles.attachBtn} onPress={() => pickImage(false)}>
             <Text style={styles.attachIcon}>🖼️</Text>
           </TouchableOpacity>
+          <TouchableOpacity style={styles.attachBtn} onPress={pickFile}>
+            <Text style={styles.attachIcon}>📄</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.attachBtn, listening && { backgroundColor: C.accentSoft }]}
+            onPress={toggleVoice}
+          >
+            <Text style={[styles.attachIcon, listening && { color: C.accent }]}>{listening ? '🔴' : '🎤'}</Text>
+          </TouchableOpacity>
           <TextInput
             style={[styles.input, { backgroundColor: C.inputBg, color: C.aiText }]}
             value={input}
@@ -262,51 +599,120 @@ export default function ChatScreen() {
             placeholderTextColor={C.sub}
             multiline
           />
-          <TouchableOpacity
-            style={[styles.sendBtn, { backgroundColor: sending ? C.sub : C.accent }]}
-            onPress={sendMessage}
-            disabled={sending}
-          >
-            <ThemedText style={styles.sendText}>{sending ? '...' : '发送'}</ThemedText>
-          </TouchableOpacity>
+          {sending ? (
+            <TouchableOpacity style={[styles.sendBtn, { backgroundColor: C.danger }]} onPress={stopStreaming}>
+              <ThemedText style={styles.sendText}>停止</ThemedText>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={[styles.sendBtn, { backgroundColor: (!input.trim() && !image && !fileName) ? C.sub : C.accent }]}
+              onPress={sendMessage}
+            >
+              <ThemedText style={styles.sendText}>发送</ThemedText>
+            </TouchableOpacity>
+          )}
         </View>
       </KeyboardAvoidingView>
 
-      <Modal visible={showHistory} animationType="slide" transparent onRequestClose={() => setShowHistory(false)}>
+      {/* 历史会话面板 */}
+      <Modal visible={showHistory} animationType="slide" transparent onRequestClose={() => { setShowHistory(false); setSearchKw(''); }}>
         <View style={styles.modalMask}>
-          <View style={[styles.historyPanel, { backgroundColor: C.panelBg }]}>
-            <View style={styles.historyHeader}>
+          <View style={[styles.bottomPanel, { backgroundColor: C.panelBg }]}>
+            <View style={styles.panelHeader}>
               <ThemedText type="subtitle">历史会话</ThemedText>
               <View style={{ flexDirection: 'row', gap: 16 }}>
+                <TouchableOpacity onPress={exportSession}><ThemedText style={{ color: C.accent }}>导出</ThemedText></TouchableOpacity>
                 <TouchableOpacity onPress={newChat}><ThemedText style={{ color: C.accent }}>＋ 新对话</ThemedText></TouchableOpacity>
-                <TouchableOpacity onPress={() => setShowHistory(false)}><ThemedText style={{ color: C.sub }}>关闭</ThemedText></TouchableOpacity>
+                <TouchableOpacity onPress={() => { setShowHistory(false); setSearchKw(''); }}><ThemedText style={{ color: C.sub }}>关闭</ThemedText></TouchableOpacity>
               </View>
             </View>
-            {sessions.length === 0 ? (
-              <ThemedText style={{ color: C.sub }}>暂无历史会话</ThemedText>
-            ) : (
-              <FlatList
-                data={sessions}
-                keyExtractor={(item) => item.id}
-                renderItem={({ item }) => (
-                  <View style={[styles.sessionItem, { borderBottomColor: C.border }]}>
-                    <TouchableOpacity style={{ flex: 1 }} onPress={() => openSession(item.id)}>
-                      <ThemedText numberOfLines={1} style={item.id === sessionId ? { color: C.accent, fontWeight: '600' } : undefined}>
-                        {item.title}{item.id === sessionId ? ' （当前）' : ''}
-                      </ThemedText>
-                      {!!item.updatedAt && (
-                        <ThemedText style={{ color: C.sub, fontSize: 12 }}>{new Date(item.updatedAt).toLocaleString()}</ThemedText>
-                      )}
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => removeSession(item.id)}>
-                      <ThemedText style={{ color: C.danger, fontSize: 13 }}>删除</ThemedText>
-                    </TouchableOpacity>
-                  </View>
-                )}
-              />
-            )}
+            <TextInput
+              style={[styles.searchInput, { backgroundColor: C.inputBg, color: C.aiText }]}
+              placeholder="搜索会话..."
+              placeholderTextColor={C.sub}
+              value={searchKw}
+              onChangeText={setSearchKw}
+            />
+            {(() => {
+              const filtered = searchKw
+                ? sessions.filter((s: any) => (s.title || '').toLowerCase().includes(searchKw.toLowerCase()))
+                : sessions;
+              if (filtered.length === 0) return <ThemedText style={{ color: C.sub, padding: 16 }}>无匹配会话</ThemedText>;
+              return (
+                <FlatList
+                  data={filtered}
+                  keyExtractor={(item) => item.id}
+                  renderItem={({ item }) => (
+                    <View style={[styles.sessionItem, { borderBottomColor: C.border }]}>
+                      <TouchableOpacity style={{ flex: 1 }} onPress={() => openSession(item.id)}>
+                        <ThemedText numberOfLines={1} style={item.id === sessionId ? { color: C.accent, fontWeight: '600' } : undefined}>
+                          {item.title}{item.id === sessionId ? ' （当前）' : ''}
+                        </ThemedText>
+                        {!!item.updatedAt && (
+                          <ThemedText style={{ color: C.sub, fontSize: 12 }}>{new Date(item.updatedAt).toLocaleString()}</ThemedText>
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => removeSession(item.id)}>
+                        <ThemedText style={{ color: C.danger, fontSize: 13 }}>删除</ThemedText>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                />
+              );
+            })()}
           </View>
         </View>
+      </Modal>
+
+      {/* 模型选择面板 */}
+      <Modal visible={showModel} animationType="slide" transparent onRequestClose={() => setShowModel(false)}>
+        <View style={styles.modalMask}>
+          <View style={[styles.bottomPanel, { backgroundColor: C.panelBg }]}>
+            <View style={styles.panelHeader}>
+              <ThemedText type="subtitle">选择模型</ThemedText>
+              <TouchableOpacity onPress={() => setShowModel(false)}><ThemedText style={{ color: C.sub }}>关闭</ThemedText></TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              style={[styles.modelOption, { borderBottomColor: C.border }, model === 'frapi' && { backgroundColor: C.chip }]}
+              onPress={() => { setModel('frapi'); setShowModel(false); }}
+            >
+              <ThemedText style={{ fontWeight: model === 'frapi' ? '600' : '400' }}>官方 API</ThemedText>
+              {model === 'frapi' && <ThemedText style={{ color: C.accent }}>✓</ThemedText>}
+            </TouchableOpacity>
+            {thirdPartyModels.map(m => (
+              <TouchableOpacity
+                key={m.value}
+                style={[styles.modelOption, { borderBottomColor: C.border }, model === m.value && { backgroundColor: C.chip }]}
+                onPress={() => { setModel(m.value); setShowModel(false); }}
+              >
+                <ThemedText style={{ fontWeight: model === m.value ? '600' : '400' }}>{m.label}</ThemedText>
+                {model === m.value && <ThemedText style={{ color: C.accent }}>✓</ThemedText>}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+      </Modal>
+
+      {/* 消息操作 ActionSheet */}
+      <Modal visible={actionIdx != null} animationType="fade" transparent onRequestClose={closeAction}>
+        <TouchableOpacity style={styles.modalMask} onPress={closeAction} activeOpacity={1}>
+          <View style={[styles.actionSheet, { backgroundColor: C.panelBg }]}>
+            <TouchableOpacity style={[styles.actionItem, { borderBottomColor: C.border }]} onPress={copyMsg}>
+              <ThemedText>📋 复制内容</ThemedText>
+            </TouchableOpacity>
+            {messages[actionIdx ?? -1]?.role === 'user' && (
+              <TouchableOpacity style={[styles.actionItem, { borderBottomColor: C.border }]} onPress={editMsg}>
+                <ThemedText>✏️ 编辑重发</ThemedText>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={[styles.actionItem, { borderBottomColor: C.border }]} onPress={deleteMsg}>
+              <ThemedText style={{ color: C.danger }}>🗑️ 删除消息</ThemedText>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.actionItem, { borderBottomColor: C.border }]} onPress={closeAction}>
+              <ThemedText style={{ color: C.sub }}>取消</ThemedText>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );
@@ -315,28 +721,44 @@ export default function ChatScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 6, borderBottomWidth: 1, gap: 6 },
-  headerBtn: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8 },
-  headerBtnText: { fontSize: 13 },
-  newChatBtnText: { fontSize: 13, fontWeight: '600' },
-  modelPicker: { flex: 1, height: 40 },
-  picker: { flex: 1 },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 8, borderBottomWidth: 1, gap: 6 },
+  iconBtn: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  iconBtnText: { fontSize: 18, lineHeight: 20 },
+  modelChip: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', height: 36, minWidth: 88, maxWidth: 130, borderRadius: 10, paddingHorizontal: 10, gap: 3 },
+  modelChipText: { fontSize: 13, fontWeight: '500' },
+  chevron: { fontSize: 11 },
+  segment: { flexDirection: 'row', borderRadius: 9, padding: 2, marginLeft: 'auto' },
+  segItem: { paddingHorizontal: 12, height: 32, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
+  segActiveText: { color: '#FFF', fontSize: 13, fontWeight: '600' },
+  emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   listContent: { padding: 16 },
   msgBubble: { padding: 12, borderRadius: 18, marginVertical: 6, maxWidth: '85%' },
   msgImage: { width: 200, height: 200, borderRadius: 12, marginBottom: 6 },
   msgText: { fontSize: 15, lineHeight: 21 },
-  previewBar: { flexDirection: 'row', paddingHorizontal: 12, paddingTop: 8 },
+  thinking: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4 },
+  thinkDot: { width: 6, height: 6, borderRadius: 3 },
+  thinkText: { fontSize: 13, marginLeft: 4 },
+  fileBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  fileIcon: { fontSize: 16 },
+  fileName: { fontSize: 13 },
+  previewBar: { flexDirection: 'row', paddingHorizontal: 12, paddingTop: 8, gap: 8 },
+  previewItem: { position: 'relative' },
   previewThumb: { width: 64, height: 64, borderRadius: 8 },
-  previewRemove: { marginLeft: 8, width: 22, height: 22, borderRadius: 11, backgroundColor: '#E53E3E', alignItems: 'center', justifyContent: 'center', alignSelf: 'flex-start' },
-  previewRemoveText: { color: '#FFF', fontSize: 12, lineHeight: 14 },
-  inputBar: { flexDirection: 'row', alignItems: 'flex-end', padding: 10, borderTopWidth: 1, gap: 6 },
-  attachBtn: { width: 38, height: 40, justifyContent: 'center', alignItems: 'center' },
+  previewRemove: { position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: 10, backgroundColor: '#E53E3E', alignItems: 'center', justifyContent: 'center' },
+  previewRemoveText: { color: '#FFF', fontSize: 11, lineHeight: 13 },
+  filePreview: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, borderRadius: 10, height: 44 },
+  inputBar: { flexDirection: 'row', alignItems: 'flex-end', padding: 8, borderTopWidth: 1, gap: 4 },
+  attachBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
   attachIcon: { fontSize: 22 },
   input: { flex: 1, minHeight: 40, maxHeight: 100, borderRadius: 20, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10, fontSize: 16 },
-  sendBtn: { marginLeft: 2, height: 40, justifyContent: 'center', paddingHorizontal: 16, borderRadius: 20 },
+  sendBtn: { height: 40, justifyContent: 'center', paddingHorizontal: 18, borderRadius: 20, marginLeft: 4 },
   sendText: { color: '#FFF', fontWeight: '600' },
   modalMask: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  historyPanel: { borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16, maxHeight: '70%' },
-  historyHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  actionSheet: { borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 8 },
+  actionItem: { padding: 16, borderBottomWidth: StyleSheet.hairlineWidth, alignItems: 'center' },
+  bottomPanel: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, maxHeight: '70%' },
+  panelHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  searchInput: { borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 10, fontSize: 14 },
   sessionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, gap: 8 },
+  modelOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 4, borderBottomWidth: StyleSheet.hairlineWidth },
 });

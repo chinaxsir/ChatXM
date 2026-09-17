@@ -11,7 +11,11 @@
       "icon": "./assets/expo.icon",
       "bundleIdentifier": "com.xsircn.chatxm",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "需要使用相机拍照发送图片",
+        "NSPhotoLibraryUsageDescription": "需要访问相册选择图片",
+        "NSMicrophoneUsageDescription": "需要使用麦克风进行语音输入",
+        "NSSpeechRecognitionUsageDescription": "需要使用语音识别将语音转为文字"
       }
     },
     "android": {
@@ -30,6 +34,8 @@
     },
     "plugins": [
       "expo-router",
+      "expo-image-picker",
+      "expo-document-picker",
       [
         "expo-splash-screen",
         {
@@ -37,7 +43,8 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
-      ]
+      ],
+      "expo-speech-recognition"
     ],
     "experiments": {
       "typedRoutes": true,

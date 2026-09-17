@@ -135,5 +135,65 @@ export const api = {
       }),
     });
     return response.json();
+  },
+
+  // 流式对话（SSE），onDelta 接收增量文本，onDone 接收最终 usage，signal 用于中断
+  async sendChatStream(args: any, onDelta: (text: string) => void, onDone: (usage: any) => void, signal?: AbortSignal) {
+    const authHeader = args.token ? (args.token.startsWith('Bearer ') ? args.token : `Bearer ${args.token}`) : '';
+    const response = await fetch(`${args.endpoint}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': authHeader,
+        'Content-Type': 'application/json',
+      },
+      signal,
+      body: JSON.stringify({
+        model: args.model,
+        stream: true,
+        stream_options: { include_usage: true },
+        messages: JSON.parse(args.history || "[]").concat([args.image ? {
+          role: "user",
+          content: [
+            { type: "text", text: args.prompt },
+            { type: "image_url", image_url: { url: args.image } },
+          ],
+        } : { role: "user", content: args.prompt }]),
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(errText || `HTTP ${response.status}`);
+    }
+
+    // @ts-ignore
+    const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let usage: any = null;
+    let aborted = false;
+    signal?.addEventListener('abort', () => { aborted = true; reader.cancel().catch(() => {}); });
+
+    while (!aborted) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const data = trimmed.slice(5).trim();
+        if (!data || data === '[DONE]') continue;
+        try {
+          const json = JSON.parse(data);
+          const delta = json.choices?.[0]?.delta;
+          if (delta?.content) onDelta(delta.content);
+          if (json.usage) usage = json.usage;
+        } catch { /* 忽略非 JSON 行 */ }
+      }
+    }
+    if (!aborted) onDone(usage || {});
   }
 };

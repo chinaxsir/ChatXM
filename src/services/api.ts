@@ -32,12 +32,24 @@ export const api = {
 
   // 充值接口（x-session-token 认证）
   async recharge(sessionToken: string, voucherCode: string) {
-    const response = await fetch(`${BASE_API_URL}/api/client-portal/recharge`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': sessionToken },
-      body: JSON.stringify({ voucher_code: voucherCode }),
-    });
-    return response.json();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(`${BASE_API_URL}/api/client-portal/recharge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-session-token': sessionToken },
+        body: JSON.stringify({ voucher_code: voucherCode }),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      clearTimeout(timer);
+      console.log('=== recharge response raw ===', text?.substring(0, 200));
+      try { return JSON.parse(text); } catch { return { status: 'error', message: text || `HTTP ${response.status}` }; }
+    } catch (e) {
+      clearTimeout(timer);
+      console.warn('=== recharge error ===', e);
+      throw e;
+    }
   },
 
   // 余额与账户信息刷新（GET /dashboard + x-session-token）

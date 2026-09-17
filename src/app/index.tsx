@@ -131,7 +131,7 @@ export default function ChatScreen() {
       const perm = useCamera
         ? await ImagePicker.requestCameraPermissionsAsync()
         : await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (perm.status !== 'granted') { alert('需要授权访问' + (useCamera ? '相机' : '相册')); return; }
+      if (perm.status !== 'granted') { Alert.alert('Frapi AI', '需要授权访问' + (useCamera ? '相机' : '相册')); return; }
 
       const result = useCamera
         ? await ImagePicker.launchCameraAsync(options)
@@ -151,7 +151,7 @@ export default function ChatScreen() {
       }
       setImage(dataUrl);
     } catch (e: any) {
-      alert('获取图片失败: ' + (e?.message || e));
+      Alert.alert('Frapi AI', '获取图片失败: ' + (e?.message || e));
     }
   };
 
@@ -191,7 +191,7 @@ export default function ChatScreen() {
         setFileContent(content);
       }
     } catch (e: any) {
-      alert('选择文件失败: ' + (e?.message || e));
+      Alert.alert('Frapi AI', '选择文件失败: ' + (e?.message || e));
     }
   };
 
@@ -222,13 +222,13 @@ export default function ChatScreen() {
     // 余额检查：新注册用户有 $1 额度，余额耗尽则拦截
     const balance = Number(config.balance ?? 0);
     if (config.balance != null && balance <= 0) {
-      alert('余额不足，请前往「设置」充值后继续使用');
+      Alert.alert('Frapi AI', '余额不足，请前往「设置」充值后继续使用');
       return;
     }
 
     const target = resolveTarget();
     if (!target.token) {
-      alert('未配置 API Key，请重新登录或在设置中添加 API');
+      Alert.alert('Frapi AI', '未配置 API Key，请重新登录或在设置中添加 API');
       return;
     }
 
@@ -351,7 +351,7 @@ export default function ChatScreen() {
         setMessages(prev => prev.slice(0, -1));
       }
       if (!aborted) {
-        alert('对话请求失败: ' + (e?.message || e));
+        Alert.alert('Frapi AI', '对话请求失败: ' + (e?.message || e));
         console.error(e);
       }
     } finally {
@@ -386,14 +386,14 @@ export default function ChatScreen() {
 
   // 导出当前会话为文本
   const exportSession = async () => {
-    if (messages.length === 0) { alert('当前会话无内容可导出'); return; }
+    if (messages.length === 0) { Alert.alert('Frapi AI', '当前会话无内容可导出'); return; }
     const text = messages.map(m => {
       const role = m.role === 'user' ? '我' : 'AI';
       return `[${role}]\n${m.content}`;
     }).join('\n\n');
     const full = `Frapi AI 会话导出\n时间: ${new Date().toLocaleString()}\n模型: ${model === 'frapi' ? '官方 API' : model}\n\n${text}`;
     await Clipboard.setStringAsync(full);
-    alert('会话内容已复制到剪贴板，可粘贴到任意位置保存');
+    Alert.alert('Frapi AI', '会话内容已复制到剪贴板，可粘贴到任意位置保存');
   };
 
   // 语音识别事件监听
@@ -416,7 +416,7 @@ export default function ChatScreen() {
     }
     try {
       const perm = await SpeechRecognition.ExpoSpeechRecognitionModule.requestPermissionsAsync();
-      if (!perm.granted) { alert('需要麦克风权限'); return; }
+      if (!perm.granted) { Alert.alert('Frapi AI', '需要麦克风权限'); return; }
       setListening(true);
       SpeechRecognition.ExpoSpeechRecognitionModule.start({ lang: 'zh-CN', interimResults: true });
     } catch {

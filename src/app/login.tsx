@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, View, Text, TextInput, TouchableOpacity, SafeAreaView, ActivityIndicator, Animated, Easing, Linking, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { StyleSheet, View, Text, TextInput, TouchableOpacity, SafeAreaView, ActivityIndicator, Animated, Easing, Linking, KeyboardAvoidingView, Platform, ScrollView, Alert } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { useThemeMode } from '@/hooks/useThemeMode';
@@ -56,12 +56,12 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
   });
 
   const handleLogin = async () => {
-    if (!username.trim() || !password.trim()) { alert('请输入用户名和密码'); return; }
+    if (!username.trim() || !password.trim()) { Alert.alert('Frapi AI', '请输入用户名和密码'); return; }
     setLoading(true);
     try {
       const res = await api.login({ username, password });
       if (res?.status !== 'success') {
-        alert('登录失败: ' + (res?.message || JSON.stringify(res).substring(0, 150)));
+        Alert.alert('Frapi AI', '登录失败: ' + (res?.message || JSON.stringify(res).substring(0, 150)));
         return;
       }
 
@@ -97,7 +97,7 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
       await api.saveConfig(finalConfig);
       finish();
     } catch (e: any) {
-      alert('登录异常: ' + (e?.message || e));
+      Alert.alert('Frapi AI', '登录异常: ' + (e?.message || e));
     } finally {
       setLoading(false);
     }

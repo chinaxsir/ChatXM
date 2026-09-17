@@ -100,23 +100,27 @@ export default function SettingsScreen() {
   };
 
   const handleRecharge = async () => {
-    if (!voucher.trim()) { alert('请输入卡密'); return; }
+    if (!voucher.trim()) { Alert.alert('Frapi AI', '请输入卡密'); return; }
     setBusy(true);
     try {
       const res = await api.recharge(config.session_token, voucher.trim());
-      if (res?.status === 'success') {
-        alert('充值成功' + (res?.data?.amount != null ? `，到账 ${res.data.amount}` : ''));
+      console.log('=== recharge parsed ===', res);
+      // 兼容后端多种成功返回格式
+      const ok = res?.status === 'success' || res?.code === 'success' || res?.code === 200 || res?.ok === true;
+      if (ok) {
+        Alert.alert('Frapi AI', '充值成功' + (res?.data?.amount != null ? `，到账 ${res.data.amount}` : ''));
         setVoucher('');
         setShowRecharge(false);
         const updated = { ...config, balance: res?.data?.balance ?? config.balance };
         await api.saveConfig(updated);
         setConfig(updated);
       } else {
-        const msg = res?.error?.message || res?.data?.message || res?.message || '卡密无效或已被使用';
-        alert('充值失败: ' + msg);
+        // 兼容后端 {code, message} 格式
+        const msg = res?.message || res?.error?.message || res?.data?.message || JSON.stringify(res).substring(0, 80);
+        Alert.alert('Frapi AI', '充值失败: ' + msg);
       }
     } catch (e: any) {
-      alert('充值失败: ' + (e?.message || e));
+      Alert.alert('Frapi AI', '充值失败: ' + (e?.message || e));
     } finally {
       setBusy(false);
     }
@@ -124,7 +128,7 @@ export default function SettingsScreen() {
 
   const handleAddApi = async () => {
     if (!apiForm.endpoint.trim() || !apiForm.apiKey.trim()) {
-      alert('Endpoint 和 API Key 为必填项');
+      Alert.alert('Frapi AI', 'Endpoint 和 API Key 为必填项');
       return;
     }
     setBusy(true);
@@ -144,7 +148,7 @@ export default function SettingsScreen() {
         .filter(Boolean);
       const merged = Array.from(new Set([...list, ...manual]));
       if (merged.length === 0) {
-        alert('未能自动获取模型，请手动输入模型名称（逗号分隔）');
+        Alert.alert('Frapi AI', '未能自动获取模型，请手动输入模型名称（逗号分隔）');
         return;
       }
       const newApis = [...(config.third_party_apis || []), { name: apiForm.name, endpoint: apiForm.endpoint.trim(), apiKey: apiForm.apiKey.trim(), models: merged }];
@@ -153,9 +157,9 @@ export default function SettingsScreen() {
       setConfig(newConfig);
       setApiForm({ name: '', endpoint: '', apiKey: '', models: '' });
       setShowAddApi(false);
-      alert('添加成功，共 ' + merged.length + ' 个模型');
+      Alert.alert('Frapi AI', '添加成功，共 ' + merged.length + ' 个模型');
     } catch {
-      alert('添加失败，请检查网络或手动输入模型名称');
+      Alert.alert('Frapi AI', '添加失败，请检查网络或手动输入模型名称');
     } finally {
       setBusy(false);
     }

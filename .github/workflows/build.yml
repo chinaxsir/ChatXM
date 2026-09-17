@@ -64,6 +64,12 @@ jobs:
         run: npm ci
       - name: Generate native iOS project
         run: npx expo prebuild --platform ios --no-install
+      - name: List ios directory
+        run: |
+          echo "=== ios directory contents ==="
+          ls -la ios/
+          echo "=== Looking for .xcworkspace and .xcodeproj ==="
+          find ios -name "*.xcworkspace" -o -name "*.xcodeproj" || true
       # 缓存 Pods 目录：命中则跳过 pod install
       - name: Cache CocoaPods
         id: pods-cache
@@ -89,8 +95,23 @@ jobs:
       - name: Build unsigned .app (TrollStore compatible)
         run: |
           cd ios
+          # 自动查找 workspace 或 project 文件
+          WORKSPACE=$(find . -maxdepth 1 -name "*.xcworkspace" | head -1)
+          PROJECT=$(find . -maxdepth 1 -name "*.xcodeproj" | head -1)
+          echo "=== Found workspace: $WORKSPACE ==="
+          echo "=== Found project: $PROJECT ==="
+          if [ -n "$WORKSPACE" ]; then
+            BUILD_CMD="xcodebuild -workspace $WORKSPACE -scheme ChatXM"
+          elif [ -n "$PROJECT" ]; then
+            SCHEME=$(xcodebuild -list -project "$PROJECT" 2>/dev/null | grep -A20 "Schemes:" | tail -n +2 | head -1 | xargs)
+            echo "=== Using scheme: $SCHEME ==="
+            BUILD_CMD="xcodebuild -project $PROJECT -scheme ${SCHEME:-ChatXM}"
+          else
+            echo "ERROR: No .xcworkspace or .xcodeproj found in ios/"
+            exit 1
+          fi
           set +e
-          xcodebuild -workspace ChatXM.xcworkspace -scheme ChatXM -configuration Release -sdk iphoneos -arch arm64 -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" ONLY_ACTIVE_ARCH=YES > xcodebuild.log 2>&1
+          $BUILD_CMD -configuration Release -sdk iphoneos -arch arm64 -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" ONLY_ACTIVE_ARCH=YES > xcodebuild.log 2>&1
           EXIT_CODE=$?
           echo "=== EXIT CODE: $EXIT_CODE ==="
           echo "=== ERRORS (if any) ==="
@@ -101,7 +122,9 @@ jobs:
       - name: Package unsigned IPA
         run: |
           mkdir -p Payload
-          cp -r ios/build/Build/Products/Release-iphoneos/ChatXM.app Payload/
+          APP_PATH=$(find ios/build/Build/Products/Release-iphoneos -name "*.app" -maxdepth 1 | head -1)
+          echo "=== Found app: $APP_PATH ==="
+          cp -r "$APP_PATH" Payload/
           zip -qry ChatXM-unsigned.ipa Payload
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4

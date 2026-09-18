@@ -29,7 +29,7 @@ async function uriToAudioDataUrl(uri: string): Promise<string> {
     });
   }
   const base64 = await readAsStringAsync(uri, { encoding: EncodingType.Base64 });
-  return `data:audio/m4a;base64,${base64}`;
+  return `data:audio/x-m4a;base64,${base64}`;
 }
 
 type Msg = {
@@ -285,9 +285,11 @@ export default function ChatScreen() {
     return prompt;
   };
 
-  const sendMessage = async () => {
+  const sendMessage = async (overrideAudio?: string, overrideDuration?: number) => {
     if (sending) return;
-    if (!input.trim() && !image && !fileName && !audioPreview) return;
+    const currentAudio = overrideAudio !== undefined ? overrideAudio : audioPreview;
+    const currentDuration = overrideDuration !== undefined ? overrideDuration : recordedDuration;
+    if (!input.trim() && !image && !fileName && !currentAudio) return;
     if (!config) return;
 
     // 余额检查：新注册用户有 $1 额度，余额耗尽则拦截
@@ -305,8 +307,8 @@ export default function ChatScreen() {
 
     const promptText = buildPrompt();
     // 纯音频消息（无文字）时给一个默认提示
-    const displayText = input.trim() || (audioPreview ? '[语音消息]' : '');
-    const userMsg: Msg = { role: 'user', content: promptText, displayContent: displayText, image, fileName, audio: audioPreview, audioDuration: recordedDuration };
+    const displayText = input.trim() || (currentAudio ? '[语音消息]' : '');
+    const userMsg: Msg = { role: 'user', content: promptText, displayContent: displayText, image, fileName, audio: currentAudio, audioDuration: currentDuration };
     const aiMsgKey = 'ai_' + Date.now();
     const aiMsg: Msg = { role: 'assistant', content: '' };
     const newMessages = [...messages, userMsg, aiMsg];
@@ -481,6 +483,8 @@ export default function ChatScreen() {
       await setAudioModeAsync({
         allowsRecording: true,
         playsInSilentMode: true,
+        staysActiveInBackground: true,
+        shouldDuckAndroid: true,
       });
       await audioRecorder.prepareToRecordAsync(RecordingPresets.HIGH_QUALITY);
       audioRecorder.record();
@@ -808,18 +812,23 @@ export default function ChatScreen() {
               <Ionicons name="arrow-up" size={22} color="#FFF" />
             </Pressable>
           ) : (
-          <Pressable
-            style={[
-              styles.actionCircle,
-              { backgroundColor: recording ? C.danger : C.btnBg },
-            ]}
-            onPressIn={startRecording}
-            onPressOut={stopRecording}
-            hitSlop={4}
-          >
-            <Ionicons name="mic" size={21} color={recording ? '#FFF' : C.btnText} />
-          </Pressable>
-        )}
+            <Pressable
+              style={[
+                styles.actionCircle,
+                { backgroundColor: recording ? C.danger : C.btnBg },
+              ]}
+              onPressIn={startRecording}
+              onPressOut={stopRecording}
+              hitSlop={4}
+            >
+              <Ionicons name="mic" size={21} color={recording ? '#FFF' : C.btnText} />
+              {recording && (
+                <View style={[styles.recordBadge, { backgroundColor: C.danger, borderColor: C.headerBg }]}>
+                  <ThemedText style={styles.recordBadgeText}>{formatDuration(recordDuration)}</ThemedText>
+                </View>
+              )}
+            </Pressable>
+          )}
         </View>
       </KeyboardAvoidingView>
 
@@ -1005,7 +1014,10 @@ const styles = StyleSheet.create({
   audioWave: { flexDirection: 'row', alignItems: 'center', gap: 2, flex: 1, marginLeft: 2 },
   audioWaveBar: { width: 3, borderRadius: 2 },
   audioDuration: { fontSize: 12 },
+  // 录音徽章
+  recordBadge: { position: 'absolute', top: -4, right: -10, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 6, minWidth: 32, alignItems: 'center', borderWidth: 1.5 },
   recordingTip: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10 },
+  recordBadgeText: { color: '#FFF', fontSize: 9, fontWeight: '600' },
   // 音频预览
   audioPreview: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 10, borderRadius: 10, minHeight: 44 },
 });

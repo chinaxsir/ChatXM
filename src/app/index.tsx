@@ -6,8 +6,8 @@ import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as DocumentPicker from 'expo-document-picker';
 import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
-import { useAudioRecorder, useAudioRecorderState, AudioModule, RecordingPresets, setAudioModeAsync, createAudioPlayer } from 'expo-audio';
-import type { AudioPlayer } from 'expo-audio';
+import * as FileSystem from 'expo-file-system';
+import { useAudioRecorder, useAudioRecorderState, AudioModule, RecordingPresets, setAudioModeAsync, createAudioPlayer, AudioPlayer } from 'expo-audio';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
 import * as Clipboard from 'expo-clipboard';
@@ -520,7 +520,7 @@ export default function ChatScreen() {
   };
 
   // 播放/停止消息中的音频
-  const togglePlayAudio = (idx: number, audioUrl: string) => {
+  const togglePlayAudio = async (idx: number, audioUrl: string) => {
     // 如果正在播放同一条，停止
     if (playingAudioIdx === idx && playingPlayerRef.current) {
       try { playingPlayerRef.current.remove(); } catch {}
@@ -534,7 +534,18 @@ export default function ChatScreen() {
       playingPlayerRef.current = null;
     }
     try {
-      const player = createAudioPlayer({ uri: audioUrl });
+      let playUri = audioUrl;
+      // 如果是 base64 data URL，先写入临时文件再播放，避免内存崩溃/闪退
+      if (audioUrl.startsWith('data:audio/')) {
+        const base64Data = audioUrl.split(',')[1];
+        if (base64Data) {
+          const tempUri = FileSystem.cacheDirectory + `temp_audio_${idx}_${Date.now()}.m4a`;
+          await FileSystem.writeAsStringAsync(tempUri, base64Data, { encoding: FileSystem.EncodingType.Base64 });
+          playUri = tempUri;
+        }
+      }
+
+      const player = createAudioPlayer({ uri: playUri });
       playingPlayerRef.current = player;
       setPlayingAudioIdx(idx);
       player.addListener('playbackStatusUpdate', (status) => {

@@ -831,6 +831,15 @@ export default function ChatScreen() {
         </View>
       </KeyboardAvoidingView>
 
+      {/* 录音状态浮层（按住麦克风时居中弹出） */}
+      {recording && (
+        <View style={styles.recordingOverlay}>
+          <Ionicons name="mic" size={42} color="#FFF" />
+          <ThemedText style={styles.recordingOverlayText}>正在录音...</ThemedText>
+          <ThemedText style={styles.recordingOverlayTime}>{formatDuration(recordDuration)}</ThemedText>
+        </View>
+      )}
+
       {/* 历史会话面板 */}
       <Modal visible={showHistory} animationType="slide" transparent onRequestClose={() => { setShowHistory(false); setSearchKw(''); }}>
         <View style={styles.modalMask}>
@@ -1019,4 +1028,29 @@ const styles = StyleSheet.create({
   recordBadgeText: { color: '#FFF', fontSize: 9, fontWeight: '600' },
   // 音频预览
   audioPreview: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 10, borderRadius: 10, minHeight: 44 },
+  recordingOverlay: {
+    position: 'absolute',
+    top: '40%',
+    left: '50%',
+    transform: [{ translateX: -75 }, { translateY: -75 }],
+    width: 150,
+    height: 150,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  recordingOverlayText: {
+    color: '#FFF',
+    fontSize: 14,
+    marginTop: 10,
+    fontWeight: '500',
+  },
+  recordingOverlayTime: {
+    color: '#FF6B6B',
+    fontSize: 18,
+    fontWeight: '700',
+    marginTop: 6,
+  },
 });

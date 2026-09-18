@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { uploadAsync, FileSystemUploadType } from 'expo-file-system/legacy';
 
 const BASE_API_URL = "https://api.frapi.kdns.fr";
 
@@ -182,30 +183,34 @@ export const api = {
   async transcribeAudio(args: { endpoint: string; token: string; uri: string }): Promise<string> {
     const authHeader = args.token ? (args.token.startsWith('Bearer ') ? args.token : `Bearer ${args.token}`) : '';
     const base = normalizeEndpoint(args.endpoint);
-    
-    const formData = new FormData();
-    formData.append('file', {
-      uri: args.uri,
-      name: 'recording.m4a',
-      type: 'audio/m4a',
-    } as any);
-    formData.append('model', 'whisper-1');
 
-    const response = await fetch(`${base}/v1/audio/transcriptions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': authHeader,
-      },
-      body: formData,
-    });
+    const response = await uploadAsync(
+      `${base}/v1/audio/transcriptions`,
+      args.uri,
+      {
+        headers: {
+          'Authorization': authHeader,
+        },
+        httpMethod: 'POST',
+        uploadType: FileSystemUploadType.MULTIPART,
+        fieldName: 'file',
+        mimeType: 'audio/m4a',
+        parameters: {
+          model: 'whisper-1',
+        },
+      }
+    );
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(friendlyError(response.status, errText));
+    if (response.status !== 200) {
+      throw new Error(friendlyError(response.status, response.body));
     }
 
-    const data = await response.json();
-    return data.text || '';
+    try {
+      const data = JSON.parse(response.body);
+      return data.text || '';
+    } catch {
+      throw new Error('解析语音识别结果失败');
+    }
   },
 
   // 配置存储

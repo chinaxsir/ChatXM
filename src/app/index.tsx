@@ -8,7 +8,8 @@ import * as DocumentPicker from 'expo-document-picker';
 import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
 import * as SpeechRecognition from 'expo-speech-recognition';
 import { useSpeechRecognitionEvent } from 'expo-speech-recognition';
-import { Audio } from 'expo-av';
+import { useAudioRecorder, useAudioRecorderState, AudioModule, RecordingPresets, setAudioModeAsync, createAudioPlayer } from 'expo-audio';
+import type { AudioPlayer } from 'expo-audio';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
 import * as Clipboard from 'expo-clipboard';
@@ -16,6 +17,21 @@ import Markdown from 'react-native-markdown-display';
 import LoginScreen from './login';
 
 const BUILTIN_ENDPOINT = 'https://api.frapi.kdns.fr';
+
+// 录音文件 URI → data URL：真机读 m4a 转 base64；Web 端录音产物为 blob: URL，用 fetch+FileReader 转换
+async function uriToAudioDataUrl(uri: string): Promise<string> {
+  if (Platform.OS === 'web') {
+    const blob = await fetch(uri).then(r => r.blob());
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new (globalThis as any).FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error('音频读取失败'));
+      reader.readAsDataURL(blob);
+    });
+  }
+  const base64 = await readAsStringAsync(uri, { encoding: EncodingType.Base64 });
+  return `data:audio/m4a;base64,${base64}`;
+}
 
 type Msg = {
   role: string;
@@ -50,13 +66,14 @@ export default function ChatScreen() {
   const [actionIdx, setActionIdx] = useState<number | null>(null);
   const [searchKw, setSearchKw] = useState('');
   const [listening, setListening] = useState(false);
-  // 音频直传模式
-  const [recording, setRecording] = useState<Audio.Recording | null>(null);
-  const [recordDuration, setRecordDuration] = useState(0);
+  // 音频直传模式（expo-audio）
+  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(audioRecorder);
+  const recording = recorderState.isRecording;
+  const recordDuration = Math.floor(recorderState.durationMillis / 1000);
   const [audioPreview, setAudioPreview] = useState<string | null>(null); // 待发送的录音 base64
-  const recordingRef = useRef<Audio.Recording | null>(null);
-  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const playingSoundRef = useRef<Audio.Sound | null>(null);
+  const [recordedDuration, setRecordedDuration] = useState(0); // 已完成录音的时长（秒）
+  const playingPlayerRef = useRef<AudioPlayer | null>(null);
   const [playingAudioIdx, setPlayingAudioIdx] = useState<number | null>(null);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressTriggeredRef = useRef(false);
@@ -82,6 +99,16 @@ export default function ChatScreen() {
     loops.forEach(l => l.start());
     return () => loops.forEach(l => l.stop());
   }, [sending, dotAnims]);
+
+  // 组件卸载时释放音频播放器
+  useEffect(() => {
+    return () => {
+      if (playingPlayerRef.current) {
+        try { playingPlayerRef.current.remove(); } catch {}
+        playingPlayerRef.current = null;
+      }
+    };
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -283,7 +310,7 @@ export default function ChatScreen() {
     const promptText = buildPrompt();
     // 纯音频消息（无文字）时给一个默认提示
     const displayText = input.trim() || (audioPreview ? '[语音消息]' : '');
-    const userMsg: Msg = { role: 'user', content: promptText, displayContent: displayText, image, fileName, audio: audioPreview, audioDuration: recordDuration };
+    const userMsg: Msg = { role: 'user', content: promptText, displayContent: displayText, image, fileName, audio: audioPreview, audioDuration: recordedDuration };
     const aiMsgKey = 'ai_' + Date.now();
     const aiMsg: Msg = { role: 'assistant', content: '' };
     const newMessages = [...messages, userMsg, aiMsg];
@@ -295,7 +322,7 @@ export default function ChatScreen() {
     setFileName(null);
     setFileContent(null);
     setAudioPreview(null);
-    setRecordDuration(0);
+    setRecordedDuration(0);
     setSending(true);
 
     const controller = new AbortController();
@@ -482,21 +509,14 @@ export default function ChatScreen() {
   // 长按开始录音（音频直传模式）
   const startRecording = async () => {
     try {
-      const perm = await Audio.requestPermissionsAsync();
+      const perm = await AudioModule.requestRecordingPermissionsAsync();
       if (!perm.granted) { Alert.alert('Frapi AI', '需要麦克风权限'); return; }
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
+      await setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
       });
-      const { recording: rec } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
-      recordingRef.current = rec;
-      setRecording(rec);
-      setRecordDuration(0);
-      recordTimerRef.current = setInterval(() => {
-        setRecordDuration((d) => d + 1);
-      }, 1000);
+      await audioRecorder.prepareToRecordAsync(RecordingPresets.HIGH_QUALITY);
+      audioRecorder.record();
     } catch (e: any) {
       Alert.alert('Frapi AI', '录音启动失败: ' + (e?.message || e));
     }
@@ -504,78 +524,58 @@ export default function ChatScreen() {
 
   // 松开停止录音并转 base64
   const stopRecording = async () => {
-    const rec = recordingRef.current;
-    if (!rec) return;
-    if (recordTimerRef.current) { clearInterval(recordTimerRef.current); recordTimerRef.current = null; }
+    if (!audioRecorder.isRecording) return;
     try {
-      await rec.stopAndUnloadAsync();
-      const uri = rec.getURI();
+      // 停止前记录时长（秒）
+      const duration = Math.floor(audioRecorder.currentTime || 0);
+      await audioRecorder.stop();
+      const uri = audioRecorder.uri;
       if (!uri) {
         Alert.alert('Frapi AI', '录音文件未生成，请重试');
-        recordingRef.current = null;
-        setRecording(null);
         return;
       }
-      // 读取音频文件转 base64
-      const base64 = await readAsStringAsync(uri, { encoding: EncodingType.Base64 });
-      const dataUrl = `data:audio/m4a;base64,${base64}`;
-      setAudioPreview(dataUrl);
-      // 清理临时录音
-      recordingRef.current = null;
-      setRecording(null);
       // 时长不足 1 秒提示
-      if (recordDuration < 1) {
+      if (duration < 1) {
         Alert.alert('Frapi AI', '录音时间过短，请长按麦克风重新录制');
-        setAudioPreview(null);
+        return;
       }
+      // 读取音频文件转 data URL（真机 m4a base64；Web 为 blob 转 dataURL）
+      const dataUrl = await uriToAudioDataUrl(uri);
+      setRecordedDuration(duration);
+      setAudioPreview(dataUrl);
     } catch (e: any) {
       Alert.alert('Frapi AI', '录音处理失败: ' + (e?.message || e));
-      recordingRef.current = null;
-      setRecording(null);
     }
-  };
-
-  // 取消录音
-  const cancelRecording = () => {
-    const rec = recordingRef.current;
-    if (rec) {
-      rec.stopAndUnloadAsync().catch(() => {});
-    }
-    if (recordTimerRef.current) { clearInterval(recordTimerRef.current); recordTimerRef.current = null; }
-    recordingRef.current = null;
-    setRecording(null);
-    setRecordDuration(0);
   };
 
   // 播放/停止消息中的音频
-  const togglePlayAudio = async (idx: number, audioUrl: string) => {
+  const togglePlayAudio = (idx: number, audioUrl: string) => {
     // 如果正在播放同一条，停止
-    if (playingAudioIdx === idx && playingSoundRef.current) {
-      try { await playingSoundRef.current.stopAsync(); await playingSoundRef.current.unloadAsync(); } catch {}
-      playingSoundRef.current = null;
+    if (playingAudioIdx === idx && playingPlayerRef.current) {
+      try { playingPlayerRef.current.remove(); } catch {}
+      playingPlayerRef.current = null;
       setPlayingAudioIdx(null);
       return;
     }
     // 停止之前正在播放的
-    if (playingSoundRef.current) {
-      try { await playingSoundRef.current.stopAsync(); await playingSoundRef.current.unloadAsync(); } catch {}
-      playingSoundRef.current = null;
+    if (playingPlayerRef.current) {
+      try { playingPlayerRef.current.remove(); } catch {}
+      playingPlayerRef.current = null;
     }
     try {
-      const { sound } = await Audio.Sound.createAsync({ uri: audioUrl });
-      playingSoundRef.current = sound;
+      const player = createAudioPlayer({ uri: audioUrl });
+      playingPlayerRef.current = player;
       setPlayingAudioIdx(idx);
-      sound.setOnPlaybackStatusUpdate((status) => {
-        const s = status as any;
-        if (s.didJustFinish) {
-          playingSoundRef.current = null;
+      player.addListener('playbackStatusUpdate', (status) => {
+        if (status.didJustFinish) {
+          playingPlayerRef.current = null;
           setPlayingAudioIdx(null);
         }
       });
-      await sound.playAsync();
+      player.play();
     } catch (e: any) {
       Alert.alert('Frapi AI', '音频播放失败: ' + (e?.message || e));
-      playingSoundRef.current = null;
+      playingPlayerRef.current = null;
       setPlayingAudioIdx(null);
     }
   };
@@ -777,8 +777,8 @@ export default function ChatScreen() {
               <View style={[styles.audioPreview, { backgroundColor: C.inputBg }]}>
                 <Text style={styles.fileIcon}>🎙️</Text>
                 <ThemedText style={[styles.fileName, { color: C.aiText }]}>语音消息</ThemedText>
-                <ThemedText style={{ color: C.sub, fontSize: 12 }}>{formatDuration(recordDuration)}</ThemedText>
-                <TouchableOpacity onPress={() => { setAudioPreview(null); setRecordDuration(0); }} style={{ marginLeft: 8 }}>
+                <ThemedText style={{ color: C.sub, fontSize: 12 }}>{formatDuration(recordedDuration)}</ThemedText>
+                <TouchableOpacity onPress={() => { setAudioPreview(null); setRecordedDuration(0); }} style={{ marginLeft: 8 }}>
                   <Text style={{ color: C.danger }}>✕</Text>
                 </TouchableOpacity>
               </View>

@@ -44,7 +44,13 @@
           "imageWidth": 76
         }
       ],
-      "expo-speech-recognition"
+      "expo-speech-recognition",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "允许 $(PRODUCT_NAME) 访问麦克风以录制语音消息"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

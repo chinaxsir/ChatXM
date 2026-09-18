@@ -5,9 +5,10 @@ import { useThemeMode } from '@/hooks/useThemeMode';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
+import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
 import * as SpeechRecognition from 'expo-speech-recognition';
 import { useSpeechRecognitionEvent } from 'expo-speech-recognition';
+import { Audio } from 'expo-av';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
 import * as Clipboard from 'expo-clipboard';
@@ -22,6 +23,8 @@ type Msg = {
   displayContent?: string;  // 展示用的简短内容（仅用户输入文字），用于 UI 气泡
   image?: string | null;
   fileName?: string | null;
+  audio?: string | null;    // 音频附件（base64 data URL）
+  audioDuration?: number;   // 音频时长（秒）
 };
 
 const palettes = {
@@ -43,9 +46,20 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showModel, setShowModel] = useState(false);
+  const [showImageSrc, setShowImageSrc] = useState(false);
   const [actionIdx, setActionIdx] = useState<number | null>(null);
   const [searchKw, setSearchKw] = useState('');
   const [listening, setListening] = useState(false);
+  // 音频直传模式
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [recordDuration, setRecordDuration] = useState(0);
+  const [audioPreview, setAudioPreview] = useState<string | null>(null); // 待发送的录音 base64
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const playingSoundRef = useRef<Audio.Sound | null>(null);
+  const [playingAudioIdx, setPlayingAudioIdx] = useState<number | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressTriggeredRef = useRef(false);
   const [sessions, setSessions] = useState<any[]>([]);
   const listRef = useRef<FlatList<Msg>>(null);
   const router = useRouter();
@@ -156,6 +170,15 @@ export default function ChatScreen() {
     }
   };
 
+  // 图片按钮统一入口：真机弹出「拍照 / 相册」选择，Web 直接打开相册
+  const onPressImage = () => {
+    if (Platform.OS === 'web') {
+      pickImage(false);
+    } else {
+      setShowImageSrc(true);
+    }
+  };
+
   const pickFile = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -184,7 +207,7 @@ export default function ChatScreen() {
         let readError = '';
         if (isText) {
           try {
-            content = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.UTF8 });
+            content = await readAsStringAsync(file.uri, { encoding: EncodingType.UTF8 });
           } catch (e: any) {
             readError = e?.message || String(e);
           }
@@ -241,7 +264,7 @@ export default function ChatScreen() {
 
   const sendMessage = async () => {
     if (sending) return;
-    if (!input.trim() && !image && !fileName) return;
+    if (!input.trim() && !image && !fileName && !audioPreview) return;
     if (!config) return;
 
     // 余额检查：新注册用户有 $1 额度，余额耗尽则拦截
@@ -258,7 +281,9 @@ export default function ChatScreen() {
     }
 
     const promptText = buildPrompt();
-    const userMsg: Msg = { role: 'user', content: promptText, displayContent: input, image, fileName };
+    // 纯音频消息（无文字）时给一个默认提示
+    const displayText = input.trim() || (audioPreview ? '[语音消息]' : '');
+    const userMsg: Msg = { role: 'user', content: promptText, displayContent: displayText, image, fileName, audio: audioPreview, audioDuration: recordDuration };
     const aiMsgKey = 'ai_' + Date.now();
     const aiMsg: Msg = { role: 'assistant', content: '' };
     const newMessages = [...messages, userMsg, aiMsg];
@@ -269,6 +294,8 @@ export default function ChatScreen() {
     setImage(null);
     setFileName(null);
     setFileContent(null);
+    setAudioPreview(null);
+    setRecordDuration(0);
     setSending(true);
 
     const controller = new AbortController();
@@ -300,6 +327,7 @@ export default function ChatScreen() {
           model: target.model,
           prompt: promptText,
           image: image || undefined,
+          audio: audioPreview || undefined,
           history: JSON.stringify(messages),
         },
         (delta) => {
@@ -433,7 +461,8 @@ export default function ChatScreen() {
   useSpeechRecognitionEvent('error', () => setListening(false));
   useSpeechRecognitionEvent('end', () => setListening(false));
 
-  // 语音输入
+  // ========== 语音输入 ==========
+  // 短按：STT 语音转文字（兼容旧行为）
   const toggleVoice = async () => {
     if (listening) {
       SpeechRecognition.ExpoSpeechRecognitionModule.stop();
@@ -448,6 +477,114 @@ export default function ChatScreen() {
     } catch {
       setListening(false);
     }
+  };
+
+  // 长按开始录音（音频直传模式）
+  const startRecording = async () => {
+    try {
+      const perm = await Audio.requestPermissionsAsync();
+      if (!perm.granted) { Alert.alert('Frapi AI', '需要麦克风权限'); return; }
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+      const { recording: rec } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      recordingRef.current = rec;
+      setRecording(rec);
+      setRecordDuration(0);
+      recordTimerRef.current = setInterval(() => {
+        setRecordDuration((d) => d + 1);
+      }, 1000);
+    } catch (e: any) {
+      Alert.alert('Frapi AI', '录音启动失败: ' + (e?.message || e));
+    }
+  };
+
+  // 松开停止录音并转 base64
+  const stopRecording = async () => {
+    const rec = recordingRef.current;
+    if (!rec) return;
+    if (recordTimerRef.current) { clearInterval(recordTimerRef.current); recordTimerRef.current = null; }
+    try {
+      await rec.stopAndUnloadAsync();
+      const uri = rec.getURI();
+      if (!uri) {
+        Alert.alert('Frapi AI', '录音文件未生成，请重试');
+        recordingRef.current = null;
+        setRecording(null);
+        return;
+      }
+      // 读取音频文件转 base64
+      const base64 = await readAsStringAsync(uri, { encoding: EncodingType.Base64 });
+      const dataUrl = `data:audio/m4a;base64,${base64}`;
+      setAudioPreview(dataUrl);
+      // 清理临时录音
+      recordingRef.current = null;
+      setRecording(null);
+      // 时长不足 1 秒提示
+      if (recordDuration < 1) {
+        Alert.alert('Frapi AI', '录音时间过短，请长按麦克风重新录制');
+        setAudioPreview(null);
+      }
+    } catch (e: any) {
+      Alert.alert('Frapi AI', '录音处理失败: ' + (e?.message || e));
+      recordingRef.current = null;
+      setRecording(null);
+    }
+  };
+
+  // 取消录音
+  const cancelRecording = () => {
+    const rec = recordingRef.current;
+    if (rec) {
+      rec.stopAndUnloadAsync().catch(() => {});
+    }
+    if (recordTimerRef.current) { clearInterval(recordTimerRef.current); recordTimerRef.current = null; }
+    recordingRef.current = null;
+    setRecording(null);
+    setRecordDuration(0);
+  };
+
+  // 播放/停止消息中的音频
+  const togglePlayAudio = async (idx: number, audioUrl: string) => {
+    // 如果正在播放同一条，停止
+    if (playingAudioIdx === idx && playingSoundRef.current) {
+      try { await playingSoundRef.current.stopAsync(); await playingSoundRef.current.unloadAsync(); } catch {}
+      playingSoundRef.current = null;
+      setPlayingAudioIdx(null);
+      return;
+    }
+    // 停止之前正在播放的
+    if (playingSoundRef.current) {
+      try { await playingSoundRef.current.stopAsync(); await playingSoundRef.current.unloadAsync(); } catch {}
+      playingSoundRef.current = null;
+    }
+    try {
+      const { sound } = await Audio.Sound.createAsync({ uri: audioUrl });
+      playingSoundRef.current = sound;
+      setPlayingAudioIdx(idx);
+      sound.setOnPlaybackStatusUpdate((status) => {
+        const s = status as any;
+        if (s.didJustFinish) {
+          playingSoundRef.current = null;
+          setPlayingAudioIdx(null);
+        }
+      });
+      await sound.playAsync();
+    } catch (e: any) {
+      Alert.alert('Frapi AI', '音频播放失败: ' + (e?.message || e));
+      playingSoundRef.current = null;
+      setPlayingAudioIdx(null);
+    }
+  };
+
+  // 格式化时长 mm:ss
+  const formatDuration = (sec: number) => {
+    const m = Math.floor(sec / 60).toString().padStart(2, '0');
+    const s = (sec % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
   };
 
   const handleLoginSuccess = async () => {
@@ -549,6 +686,27 @@ export default function ChatScreen() {
                   </View>
                 )}
                 {!!item.image && <Image source={{ uri: item.image }} style={styles.msgImage} resizeMode="cover" />}
+                {!!item.audio && (
+                  <Pressable
+                    style={[styles.audioBubble, { backgroundColor: item.role === 'user' ? 'rgba(255,255,255,0.2)' : C.inputBg }]}
+                    onPress={() => togglePlayAudio(index, item.audio!)}
+                  >
+                    <Text style={[styles.audioPlayIcon, { color: item.role === 'user' ? '#FFF' : C.accent }]}>
+                      {playingAudioIdx === index ? '⏸' : '▶'}
+                    </Text>
+                    <View style={styles.audioWave}>
+                      {[...Array(5)].map((_, i) => (
+                        <View key={i} style={[styles.audioWaveBar, {
+                          backgroundColor: item.role === 'user' ? 'rgba(255,255,255,0.6)' : C.sub,
+                          height: 8 + (i % 3) * 4,
+                        }]} />
+                      ))}
+                    </View>
+                    <ThemedText style={[styles.audioDuration, { color: item.role === 'user' ? '#FFF' : C.sub }]}>
+                      {formatDuration(item.audioDuration || 0)}
+                    </ThemedText>
+                  </Pressable>
+                )}
                 {!!item.content && (
                   item.role === 'assistant' ? (
                     <Markdown
@@ -596,7 +754,7 @@ export default function ChatScreen() {
         )}
 
         {/* 待发送附件预览 */}
-        {(image || fileName) && (
+        {(image || fileName || audioPreview) && (
           <View style={[styles.previewBar, { backgroundColor: C.headerBg }]}>
             {!!image && (
               <View style={styles.previewItem}>
@@ -615,27 +773,63 @@ export default function ChatScreen() {
                 </TouchableOpacity>
               </View>
             )}
+            {!!audioPreview && (
+              <View style={[styles.audioPreview, { backgroundColor: C.inputBg }]}>
+                <Text style={styles.fileIcon}>🎙️</Text>
+                <ThemedText style={[styles.fileName, { color: C.aiText }]}>语音消息</ThemedText>
+                <ThemedText style={{ color: C.sub, fontSize: 12 }}>{formatDuration(recordDuration)}</ThemedText>
+                <TouchableOpacity onPress={() => { setAudioPreview(null); setRecordDuration(0); }} style={{ marginLeft: 8 }}>
+                  <Text style={{ color: C.danger }}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         )}
 
-        {/* 输入区：拍照 | 文件 | 输入框 | 发送 */}
+        {/* 输入区：图片（拍照/相册） | 文件 | 输入框 | 发送 */}
         <View style={[styles.inputBar, { backgroundColor: C.headerBg, borderTopColor: C.border }]}>
-          {Platform.OS !== 'web' && (
-            <Pressable style={({ pressed }) => [styles.attachBtn, pressed && { opacity: 0.5, transform: [{ scale: 0.88 }] }]} onPress={() => pickImage(true)}>
-              <Text style={styles.attachIcon}>📷</Text>
-            </Pressable>
-          )}
-          <Pressable style={({ pressed }) => [styles.attachBtn, pressed && { opacity: 0.5, transform: [{ scale: 0.88 }] }]} onPress={() => pickImage(false)}>
+          <Pressable style={({ pressed }) => [styles.attachBtn, pressed && { opacity: 0.5, transform: [{ scale: 0.88 }] }]} onPress={onPressImage}>
             <Text style={styles.attachIcon}>🖼️</Text>
           </Pressable>
           <Pressable style={({ pressed }) => [styles.attachBtn, pressed && { opacity: 0.5, transform: [{ scale: 0.88 }] }]} onPress={pickFile}>
             <Text style={styles.attachIcon}>📄</Text>
           </Pressable>
           <Pressable
-            style={({ pressed }) => [styles.attachBtn, listening && { backgroundColor: C.accentSoft }, pressed && { opacity: 0.5, transform: [{ scale: 0.88 }] }]}
-            onPress={toggleVoice}
+            style={({ pressed }) => [
+              styles.attachBtn,
+              (listening || recording) && { backgroundColor: C.accentSoft },
+              recording && { transform: [{ scale: 1.15 }] },
+              pressed && !recording && { opacity: 0.5, transform: [{ scale: 0.88 }] },
+            ]}
+            onPress={() => {
+              // 短按：STT 语音转文字（仅在非录音状态下）
+              if (!longPressTriggeredRef.current) toggleVoice();
+            }}
+            onPressIn={() => {
+              longPressTriggeredRef.current = false;
+              longPressTimerRef.current = setTimeout(() => {
+                longPressTriggeredRef.current = true;
+                startRecording();
+              }, 300);
+            }}
+            onPressOut={() => {
+              if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null; }
+              if (longPressTriggeredRef.current) {
+                stopRecording();
+                longPressTriggeredRef.current = false;
+              }
+            }}
+            onLongPress={() => {}}
+            delayLongPress={300}
           >
-            <Text style={[styles.attachIcon, listening && { color: C.accent }]}>{listening ? '🔴' : '🎤'}</Text>
+            <Text style={[styles.attachIcon, (listening || recording) && { color: C.accent }]}>
+              {recording ? '🔴' : listening ? '🔴' : '🎤'}
+            </Text>
+            {recording && (
+              <View style={[styles.recordBadge, { backgroundColor: C.danger }]}>
+                <ThemedText style={styles.recordBadgeText}>{formatDuration(recordDuration)}</ThemedText>
+              </View>
+            )}
           </Pressable>
           <TextInput
             style={[styles.input, { backgroundColor: C.inputBg, color: C.aiText }]}
@@ -743,6 +937,29 @@ export default function ChatScreen() {
         </View>
       </Modal>
 
+      {/* 图片来源选择 ActionSheet：拍照 / 相册 */}
+      <Modal visible={showImageSrc} animationType="fade" transparent onRequestClose={() => setShowImageSrc(false)}>
+        <TouchableOpacity style={styles.modalMask} onPress={() => setShowImageSrc(false)} activeOpacity={1}>
+          <View style={[styles.actionSheet, { backgroundColor: C.panelBg }]}>
+            <TouchableOpacity
+              style={[styles.actionItem, { borderBottomColor: C.border }]}
+              onPress={() => { setShowImageSrc(false); pickImage(true); }}
+            >
+              <ThemedText>📷 拍照</ThemedText>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionItem, { borderBottomColor: C.border }]}
+              onPress={() => { setShowImageSrc(false); pickImage(false); }}
+            >
+              <ThemedText>🖼️ 从相册选择</ThemedText>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.actionItem, { borderBottomColor: C.border }]} onPress={() => setShowImageSrc(false)}>
+              <ThemedText style={{ color: C.sub }}>取消</ThemedText>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       {/* 消息操作 ActionSheet */}
       <Modal visible={actionIdx != null} animationType="fade" transparent onRequestClose={closeAction}>
         <TouchableOpacity style={styles.modalMask} onPress={closeAction} activeOpacity={1}>
@@ -818,4 +1035,15 @@ const styles = StyleSheet.create({
   searchInput: { borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 10, fontSize: 14 },
   sessionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, gap: 8 },
   modelOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 4, borderBottomWidth: StyleSheet.hairlineWidth },
+  // 音频消息气泡
+  audioBubble: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, gap: 10, minWidth: 120 },
+  audioPlayIcon: { fontSize: 16 },
+  audioWave: { flexDirection: 'row', alignItems: 'center', gap: 2, flex: 1 },
+  audioWaveBar: { width: 3, borderRadius: 2 },
+  audioDuration: { fontSize: 12 },
+  // 录音徽章
+  recordBadge: { position: 'absolute', top: -2, right: -2, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 6, minWidth: 32, alignItems: 'center' },
+  recordBadgeText: { color: '#FFF', fontSize: 9, fontWeight: '600' },
+  // 音频预览
+  audioPreview: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 10, borderRadius: 10, minHeight: 44 },
 });

@@ -62,6 +62,19 @@ function friendlyError(status: number, rawText: string): string {
   return `HTTP ${status} 请求失败`;
 }
 
+// 构造用户消息内容：支持纯文本 / 文本+图片 / 文本+音频 / 文本+图片+音频
+function buildUserContent(args: any): any {
+  const hasMedia = args.image || args.audio;
+  if (!hasMedia) {
+    return { role: 'user', content: args.prompt };
+  }
+  const content: any[] = [];
+  if (args.prompt) content.push({ type: 'text', text: args.prompt });
+  if (args.image) content.push({ type: 'image_url', image_url: { url: args.image } });
+  if (args.audio) content.push({ type: 'audio_url', audio_url: { url: args.audio } });
+  return { role: 'user', content };
+}
+
 export const api = {
   // 登录
   async login(credentials: any) {
@@ -208,14 +221,7 @@ export const api = {
       },
       body: JSON.stringify({
         model: args.model,
-        // 图片消息使用 OpenAI 多模态格式（与 PC 端一致）
-        messages: JSON.parse(args.history || "[]").concat([args.image ? {
-          role: "user",
-          content: [
-            { type: "text", text: args.prompt },
-            { type: "image_url", image_url: { url: args.image } },
-          ],
-        } : { role: "user", content: args.prompt }]),
+        messages: JSON.parse(args.history || "[]").concat([buildUserContent(args)]),
       }),
     });
     if (!response.ok) {
@@ -240,13 +246,7 @@ export const api = {
         model: args.model,
         stream: true,
         stream_options: { include_usage: true },
-        messages: JSON.parse(args.history || "[]").concat([args.image ? {
-          role: "user",
-          content: [
-            { type: "text", text: args.prompt },
-            { type: "image_url", image_url: { url: args.image } },
-          ],
-        } : { role: "user", content: args.prompt }]),
+        messages: JSON.parse(args.history || "[]").concat([buildUserContent(args)]),
       }),
     });
 

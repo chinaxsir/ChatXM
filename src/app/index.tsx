@@ -6,14 +6,13 @@ import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as DocumentPicker from 'expo-document-picker';
 import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
-import * as SpeechRecognition from 'expo-speech-recognition';
-import { useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { useAudioRecorder, useAudioRecorderState, AudioModule, RecordingPresets, setAudioModeAsync, createAudioPlayer } from 'expo-audio';
 import type { AudioPlayer } from 'expo-audio';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
 import * as Clipboard from 'expo-clipboard';
 import Markdown from 'react-native-markdown-display';
+import { Ionicons } from '@expo/vector-icons';
 import LoginScreen from './login';
 
 const BUILTIN_ENDPOINT = 'https://api.frapi.kdns.fr';
@@ -65,7 +64,6 @@ export default function ChatScreen() {
   const [showImageSrc, setShowImageSrc] = useState(false);
   const [actionIdx, setActionIdx] = useState<number | null>(null);
   const [searchKw, setSearchKw] = useState('');
-  const [listening, setListening] = useState(false);
   // 音频直传模式（expo-audio）
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
@@ -75,8 +73,6 @@ export default function ChatScreen() {
   const [recordedDuration, setRecordedDuration] = useState(0); // 已完成录音的时长（秒）
   const playingPlayerRef = useRef<AudioPlayer | null>(null);
   const [playingAudioIdx, setPlayingAudioIdx] = useState<number | null>(null);
-  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressTriggeredRef = useRef(false);
   const [sessions, setSessions] = useState<any[]>([]);
   const listRef = useRef<FlatList<Msg>>(null);
   const router = useRouter();
@@ -477,36 +473,7 @@ export default function ChatScreen() {
     Alert.alert('Frapi AI', '会话内容已复制到剪贴板，可粘贴到任意位置保存');
   };
 
-  // 语音识别事件监听
-  useSpeechRecognitionEvent('result', (event: any) => {
-    const transcript = event?.results?.[0]?.transcript;
-    if (!transcript) return;
-    if (event.isFinal) {
-      setInput((prev) => (prev ? prev + ' ' + transcript : transcript));
-    }
-  });
-  useSpeechRecognitionEvent('error', () => setListening(false));
-  useSpeechRecognitionEvent('end', () => setListening(false));
-
-  // ========== 语音输入 ==========
-  // 短按：STT 语音转文字（兼容旧行为）
-  const toggleVoice = async () => {
-    if (listening) {
-      SpeechRecognition.ExpoSpeechRecognitionModule.stop();
-      setListening(false);
-      return;
-    }
-    try {
-      const perm = await SpeechRecognition.ExpoSpeechRecognitionModule.requestPermissionsAsync();
-      if (!perm.granted) { Alert.alert('Frapi AI', '需要麦克风权限'); return; }
-      setListening(true);
-      SpeechRecognition.ExpoSpeechRecognitionModule.start({ lang: 'zh-CN', interimResults: true });
-    } catch {
-      setListening(false);
-    }
-  };
-
-  // 长按开始录音（音频直传模式）
+  // ========== 语音输入（音频直传，按住麦克风录音，松开发送） ==========
   const startRecording = async () => {
     try {
       const perm = await AudioModule.requestRecordingPermissionsAsync();
@@ -605,6 +572,9 @@ export default function ChatScreen() {
 
   const currentLabel = model === 'frapi' ? '官方 API' : (thirdPartyModels.find(m => m.value === model)?.label || '官方 API');
 
+  // 是否有可发送内容（文字 / 图片 / 文件 / 待发送语音）
+  const hasContent = !!(input.trim() || image || fileName || audioPreview);
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: C.bg }]}>
       {/* 顶栏：历史 | 模型选择 | 新对话 | 对话/设置 切换 */}
@@ -691,9 +661,11 @@ export default function ChatScreen() {
                     style={[styles.audioBubble, { backgroundColor: item.role === 'user' ? 'rgba(255,255,255,0.2)' : C.inputBg }]}
                     onPress={() => togglePlayAudio(index, item.audio!)}
                   >
-                    <Text style={[styles.audioPlayIcon, { color: item.role === 'user' ? '#FFF' : C.accent }]}>
-                      {playingAudioIdx === index ? '⏸' : '▶'}
-                    </Text>
+                    <Ionicons
+                      name={playingAudioIdx === index ? 'pause' : 'play'}
+                      size={18}
+                      color={item.role === 'user' ? '#FFF' : C.accent}
+                    />
                     <View style={styles.audioWave}>
                       {[...Array(5)].map((_, i) => (
                         <View key={i} style={[styles.audioWaveBar, {
@@ -753,6 +725,17 @@ export default function ChatScreen() {
           />
         )}
 
+        {/* 录音中状态提示 */}
+        {recording && (
+          <View style={[styles.recordingTip, { backgroundColor: C.accentSoft }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="mic" size={16} color={C.danger} />
+              <Text style={{ color: C.danger, fontSize: 14 }}>录音中 {formatDuration(recordDuration)}</Text>
+            </View>
+            <ThemedText style={{ color: C.sub, fontSize: 12 }}>松开手指发送语音</ThemedText>
+          </View>
+        )}
+
         {/* 待发送附件预览 */}
         {(image || fileName || audioPreview) && (
           <View style={[styles.previewBar, { backgroundColor: C.headerBg }]}>
@@ -775,7 +758,7 @@ export default function ChatScreen() {
             )}
             {!!audioPreview && (
               <View style={[styles.audioPreview, { backgroundColor: C.inputBg }]}>
-                <Text style={styles.fileIcon}>🎙️</Text>
+                <Ionicons name="mic-circle" size={22} color={C.accent} />
                 <ThemedText style={[styles.fileName, { color: C.aiText }]}>语音消息</ThemedText>
                 <ThemedText style={{ color: C.sub, fontSize: 12 }}>{formatDuration(recordedDuration)}</ThemedText>
                 <TouchableOpacity onPress={() => { setAudioPreview(null); setRecordedDuration(0); }} style={{ marginLeft: 8 }}>
@@ -786,50 +769,21 @@ export default function ChatScreen() {
           </View>
         )}
 
-        {/* 输入区：图片（拍照/相册） | 文件 | 输入框 | 发送 */}
+        {/* 输入区：图片 | 文件 | 输入框 | 麦克风/发送/停止 */}
         <View style={[styles.inputBar, { backgroundColor: C.headerBg, borderTopColor: C.border }]}>
-          <Pressable style={({ pressed }) => [styles.attachBtn, pressed && { opacity: 0.5, transform: [{ scale: 0.88 }] }]} onPress={onPressImage}>
-            <Text style={styles.attachIcon}>🖼️</Text>
-          </Pressable>
-          <Pressable style={({ pressed }) => [styles.attachBtn, pressed && { opacity: 0.5, transform: [{ scale: 0.88 }] }]} onPress={pickFile}>
-            <Text style={styles.attachIcon}>📄</Text>
+          <Pressable
+            style={({ pressed }) => [styles.iconCircle, { backgroundColor: C.btnBg }, pressed && { opacity: 0.5 }]}
+            onPress={onPressImage}
+            hitSlop={4}
+          >
+            <Ionicons name="image-outline" size={21} color={C.btnText} />
           </Pressable>
           <Pressable
-            style={({ pressed }) => [
-              styles.attachBtn,
-              (listening || recording) && { backgroundColor: C.accentSoft },
-              recording && { transform: [{ scale: 1.15 }] },
-              pressed && !recording && { opacity: 0.5, transform: [{ scale: 0.88 }] },
-            ]}
-            onPress={() => {
-              // 短按：STT 语音转文字（仅在非录音状态下）
-              if (!longPressTriggeredRef.current) toggleVoice();
-            }}
-            onPressIn={() => {
-              longPressTriggeredRef.current = false;
-              longPressTimerRef.current = setTimeout(() => {
-                longPressTriggeredRef.current = true;
-                startRecording();
-              }, 300);
-            }}
-            onPressOut={() => {
-              if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null; }
-              if (longPressTriggeredRef.current) {
-                stopRecording();
-                longPressTriggeredRef.current = false;
-              }
-            }}
-            onLongPress={() => {}}
-            delayLongPress={300}
+            style={({ pressed }) => [styles.iconCircle, { backgroundColor: C.btnBg }, pressed && { opacity: 0.5 }]}
+            onPress={pickFile}
+            hitSlop={4}
           >
-            <Text style={[styles.attachIcon, (listening || recording) && { color: C.accent }]}>
-              {recording ? '🔴' : listening ? '🔴' : '🎤'}
-            </Text>
-            {recording && (
-              <View style={[styles.recordBadge, { backgroundColor: C.danger }]}>
-                <ThemedText style={styles.recordBadgeText}>{formatDuration(recordDuration)}</ThemedText>
-              </View>
-            )}
+            <Ionicons name="document-text-outline" size={21} color={C.btnText} />
           </Pressable>
           <TextInput
             style={[styles.input, { backgroundColor: C.inputBg, color: C.aiText }]}
@@ -840,19 +794,35 @@ export default function ChatScreen() {
             multiline
           />
           {sending ? (
-            <Pressable style={({ pressed }) => [styles.sendBtn, { backgroundColor: C.danger }, pressed && { opacity: 0.7 }]} onPress={stopStreaming}>
-              <ThemedText style={styles.sendText}>■ 停止</ThemedText>
+            <Pressable
+              style={({ pressed }) => [styles.actionCircle, { backgroundColor: C.danger }, pressed && { opacity: 0.8 }]}
+              onPress={stopStreaming}
+            >
+              <Ionicons name="stop" size={18} color="#FFF" />
+            </Pressable>
+          ) : hasContent ? (
+            <Pressable
+              style={({ pressed }) => [styles.actionCircle, { backgroundColor: C.accent }, pressed && { opacity: 0.8, transform: [{ scale: 0.92 }] }]}
+              onPress={sendMessage}
+            >
+              <Ionicons name="arrow-up" size={22} color="#FFF" />
             </Pressable>
           ) : (
             <Pressable
-              style={({ pressed }) => [
-                styles.sendBtn,
-                { backgroundColor: (!input.trim() && !image && !fileName) ? C.sub : C.accent },
-                (!input.trim() && !image && !fileName) ? { opacity: 0.5 } : pressed && { opacity: 0.8, transform: [{ scale: 0.94 }] },
+              style={[
+                styles.actionCircle,
+                { backgroundColor: recording ? C.danger : C.btnBg },
               ]}
-              onPress={sendMessage}
+              onPressIn={startRecording}
+              onPressOut={stopRecording}
+              hitSlop={4}
             >
-              <ThemedText style={styles.sendText}>发送</ThemedText>
+              <Ionicons name="mic" size={21} color={recording ? '#FFF' : C.btnText} />
+              {recording && (
+                <View style={[styles.recordBadge, { backgroundColor: C.danger, borderColor: C.headerBg }]}>
+                  <ThemedText style={styles.recordBadgeText}>{formatDuration(recordDuration)}</ThemedText>
+                </View>
+              )}
             </Pressable>
           )}
         </View>
@@ -1021,12 +991,12 @@ const styles = StyleSheet.create({
   previewRemove: { position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: 10, backgroundColor: '#E53E3E', alignItems: 'center', justifyContent: 'center' },
   previewRemoveText: { color: '#FFF', fontSize: 11, lineHeight: 13 },
   filePreview: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, borderRadius: 10, height: 44 },
-  inputBar: { flexDirection: 'row', alignItems: 'flex-end', padding: 8, borderTopWidth: 1, gap: 4 },
-  attachBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
-  attachIcon: { fontSize: 22 },
-  input: { flex: 1, minHeight: 40, maxHeight: 100, borderRadius: 20, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 10, fontSize: 16 },
-  sendBtn: { height: 40, justifyContent: 'center', paddingHorizontal: 18, borderRadius: 20, marginLeft: 4 },
-  sendText: { color: '#FFF', fontWeight: '600' },
+  inputBar: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 10, paddingVertical: 8, borderTopWidth: 1, gap: 6 },
+  // 输入栏左侧附件圆形按钮（图片/文件）
+  iconCircle: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
+  // 输入栏右侧动作圆形按钮（麦克风/发送/停止）
+  actionCircle: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
+  input: { flex: 1, minHeight: 36, maxHeight: 100, borderRadius: 18, paddingHorizontal: 14, paddingTop: 8, paddingBottom: 8, fontSize: 16 },
   modalMask: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   actionSheet: { borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 8 },
   actionItem: { padding: 16, borderBottomWidth: StyleSheet.hairlineWidth, alignItems: 'center' },
@@ -1037,12 +1007,12 @@ const styles = StyleSheet.create({
   modelOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 4, borderBottomWidth: StyleSheet.hairlineWidth },
   // 音频消息气泡
   audioBubble: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, gap: 10, minWidth: 120 },
-  audioPlayIcon: { fontSize: 16 },
-  audioWave: { flexDirection: 'row', alignItems: 'center', gap: 2, flex: 1 },
+  audioWave: { flexDirection: 'row', alignItems: 'center', gap: 2, flex: 1, marginLeft: 2 },
   audioWaveBar: { width: 3, borderRadius: 2 },
   audioDuration: { fontSize: 12 },
   // 录音徽章
-  recordBadge: { position: 'absolute', top: -2, right: -2, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 6, minWidth: 32, alignItems: 'center' },
+  recordBadge: { position: 'absolute', top: -4, right: -10, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 6, minWidth: 32, alignItems: 'center', borderWidth: 1.5 },
+  recordingTip: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10 },
   recordBadgeText: { color: '#FFF', fontSize: 9, fontWeight: '600' },
   // 音频预览
   audioPreview: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 10, borderRadius: 10, minHeight: 44 },

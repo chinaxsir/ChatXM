@@ -14,7 +14,8 @@
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "需要使用相机拍照发送图片",
         "NSPhotoLibraryUsageDescription": "需要访问相册选择图片",
-        "NSMicrophoneUsageDescription": "需要使用麦克风录制语音消息"
+        "NSMicrophoneUsageDescription": "需要使用麦克风录制语音消息",
+        "NSSpeechRecognitionUsageDescription": "需要使用语音识别将语音转为文字"
       }
     },
     "android": {
@@ -48,7 +49,8 @@
         {
           "microphonePermission": "允许 $(PRODUCT_NAME) 访问麦克风以录制语音消息"
         }
-      ]
+      ],
+      "expo-speech-recognition"
     ],
     "experiments": {
       "typedRoutes": true,

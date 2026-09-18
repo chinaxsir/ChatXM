@@ -13,6 +13,7 @@ import * as Clipboard from 'expo-clipboard';
 import Markdown from 'react-native-markdown-display';
 import { Ionicons } from '@expo/vector-icons';
 import LoginScreen from './login';
+import { SpeechRecognition, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 
 const BUILTIN_ENDPOINT = 'https://api.frapi.kdns.fr';
 
@@ -63,14 +64,26 @@ export default function ChatScreen() {
   const [showImageSrc, setShowImageSrc] = useState(false);
   const [actionIdx, setActionIdx] = useState<number | null>(null);
   const [searchKw, setSearchKw] = useState('');
-  // 语音识别与录音模式（expo-audio + Whisper STT）
-  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const recorderState = useAudioRecorderState(audioRecorder);
-  const recording = recorderState.isRecording;
-  const recordDuration = Math.floor(recorderState.durationMillis / 1000);
+  // 端侧语音识别模式（expo-speech-recognition）
   const [isTranscribing, setIsTranscribing] = useState(false);
-  const [audioPreview, setAudioPreview] = useState<string | null>(null); // 待发送的录音 base64
-  const [recordedDuration, setRecordedDuration] = useState(0); // 已完成录音的时长（秒）
+  const [recognizedText, setRecognizedText] = useState('');
+  const recording = isTranscribing;
+
+  useSpeechRecognitionEvent('result', (event) => {
+    const text = event.results[0]?.transcript;
+    if (text) {
+      setRecognizedText(text);
+      setInput(text);
+    }
+  });
+
+  useSpeechRecognitionEvent('error', (event) => {
+    console.warn('Speech error:', event.error);
+  });
+
+  useSpeechRecognitionEvent('end', () => {
+    setIsTranscribing(false);
+  });
   const playingPlayerRef = useRef<AudioPlayer | null>(null);
   const [playingAudioIdx, setPlayingAudioIdx] = useState<number | null>(null);
   const [sessions, setSessions] = useState<any[]>([]);
@@ -478,58 +491,42 @@ export default function ChatScreen() {
     Alert.alert('Frapi AI', '会话内容已复制到剪贴板，可粘贴到任意位置保存');
   };
 
-  // ========== 语音输入（音频直传，按住麦克风录音，松开发送） ==========
+  // ========== 语音输入（调用设备端侧原生语音识别，免 API 依赖） ==========
   const startRecording = async () => {
     try {
-      const perm = await AudioModule.requestRecordingPermissionsAsync();
-      if (!perm.granted) { Alert.alert('Frapi AI', '需要麦克风权限'); return; }
-      await setAudioModeAsync({
-        allowsRecording: true,
-        playsInSilentMode: true,
+      const perm = await SpeechRecognition.requestPermissionAsync();
+      if (!perm.granted) {
+        Alert.alert('Frapi AI', '需要语音识别权限');
+        return;
+      }
+      setRecognizedText('');
+      setInput('');
+      setIsTranscribing(true);
+      SpeechRecognition.start({
+        lang: 'zh-CN',
+        interimResults: true,
       });
-      await audioRecorder.prepareToRecordAsync(RecordingPresets.HIGH_QUALITY);
-      audioRecorder.record();
     } catch (e: any) {
-      Alert.alert('Frapi AI', '录音启动失败: ' + (e?.message || e));
+      setIsTranscribing(false);
+      Alert.alert('Frapi AI', '启动语音识别失败: ' + (e?.message || e));
     }
   };
 
-  // 松开停止录音并调用 STT 转为文字，自动与 AI 交互
+  // 松开停止识别，并自动发送识别出的文字
   const stopRecording = async () => {
-    if (!audioRecorder.isRecording) return;
     try {
-      const duration = Math.floor(audioRecorder.currentTime || 0);
-      await audioRecorder.stop();
-      const uri = audioRecorder.uri;
-      if (!uri) return;
-      if (duration < 1) {
-        Alert.alert('Frapi AI', '录音时间过短，请长按说话');
-        return;
-      }
-      setIsTranscribing(true);
-      const target = resolveTarget();
-      if (!target.token) {
-        Alert.alert('Frapi AI', '未配置 API Key');
-        setIsTranscribing(false);
-        return;
-      }
-      // 调用 STT 接口
-      const text = await api.transcribeAudio({
-        endpoint: target.endpoint,
-        token: target.token,
-        uri,
+      SpeechRecognition.stop();
+    } catch {}
+    setIsTranscribing(false);
+    // 使用函数式更新确保获取到最新的 recognizedText
+    setTimeout(() => {
+      setRecognizedText(prev => {
+        if (prev.trim()) {
+          sendMessage(prev.trim());
+        }
+        return '';
       });
-      setIsTranscribing(false);
-      if (text && text.trim()) {
-        // 自动将转写出的文字直接发送与 AI 交互
-        sendMessage(text.trim());
-      } else {
-        Alert.alert('Frapi AI', '未能识别语音内容，请重试');
-      }
-    } catch (e: any) {
-      setIsTranscribing(false);
-      Alert.alert('Frapi AI', '语音识别失败: ' + (e?.message || e));
-    }
+    }, 250);
   };
 
   // 播放/停止消息中的音频
@@ -753,24 +750,14 @@ export default function ChatScreen() {
           />
         )}
 
-        {/* 录音中状态提示 */}
-        {recording && (
-          <View style={[styles.recordingTip, { backgroundColor: C.accentSoft }]}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="mic" size={16} color={C.danger} />
-              <Text style={{ color: C.danger, fontSize: 14 }}>录音中 {formatDuration(recordDuration)}</Text>
-            </View>
-            <ThemedText style={{ color: C.sub, fontSize: 12 }}>松手转文字发送</ThemedText>
-          </View>
-        )}
-
-        {/* 语音识别转写中提示 */}
+        {/* 端侧语音识别中状态提示 */}
         {isTranscribing && (
           <View style={[styles.recordingTip, { backgroundColor: C.accentSoft }]}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="sparkles" size={16} color={C.accent} />
-              <Text style={{ color: C.accent, fontSize: 14, fontWeight: '600' }}>语音识别转文字中...</Text>
+              <Ionicons name="mic" size={16} color={C.danger} />
+              <Text style={{ color: C.danger, fontSize: 14, fontWeight: '600' }}>正在聆听，松手自动发送...</Text>
             </View>
+            <ThemedText style={{ color: C.sub, fontSize: 12 }}>{recognizedText || '请说话...'}</ThemedText>
           </View>
         )}
 

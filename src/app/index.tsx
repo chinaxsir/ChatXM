@@ -5,8 +5,7 @@ import { useThemeMode } from '@/hooks/useThemeMode';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as DocumentPicker from 'expo-document-picker';
-import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
-import * as FileSystem from 'expo-file-system';
+import { readAsStringAsync, writeAsStringAsync, cacheDirectory, EncodingType } from 'expo-file-system/legacy';
 import { useAudioRecorder, useAudioRecorderState, AudioModule, RecordingPresets, setAudioModeAsync, createAudioPlayer, AudioPlayer } from 'expo-audio';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
@@ -483,8 +482,6 @@ export default function ChatScreen() {
       await setAudioModeAsync({
         allowsRecording: true,
         playsInSilentMode: true,
-        staysActiveInBackground: true,
-        shouldDuckAndroid: true,
       });
       await audioRecorder.prepareToRecordAsync(RecordingPresets.HIGH_QUALITY);
       audioRecorder.record();
@@ -497,23 +494,19 @@ export default function ChatScreen() {
   const stopRecording = async () => {
     if (!audioRecorder.isRecording) return;
     try {
-      // 停止前记录时长（秒）
       const duration = Math.floor(audioRecorder.currentTime || 0);
       await audioRecorder.stop();
       const uri = audioRecorder.uri;
-      if (!uri) {
-        Alert.alert('Frapi AI', '录音文件未生成，请重试');
-        return;
-      }
-      // 时长不足 1 秒提示
+      if (!uri) return;
       if (duration < 1) {
-        Alert.alert('Frapi AI', '录音时间过短，请长按麦克风重新录制');
+        Alert.alert('Frapi AI', '录音时间过短');
         return;
       }
-      // 读取音频文件转 data URL（真机 m4a base64；Web 为 blob 转 dataURL）
       const dataUrl = await uriToAudioDataUrl(uri);
       setRecordedDuration(duration);
       setAudioPreview(dataUrl);
+      // 自动发送
+      await sendMessage(dataUrl, duration);
     } catch (e: any) {
       Alert.alert('Frapi AI', '录音处理失败: ' + (e?.message || e));
     }
@@ -539,8 +532,8 @@ export default function ChatScreen() {
       if (audioUrl.startsWith('data:audio/')) {
         const base64Data = audioUrl.split(',')[1];
         if (base64Data) {
-          const tempUri = FileSystem.cacheDirectory + `temp_audio_${idx}_${Date.now()}.m4a`;
-          await FileSystem.writeAsStringAsync(tempUri, base64Data, { encoding: FileSystem.EncodingType.Base64 });
+          const tempUri = cacheDirectory + `temp_audio_${idx}_${Date.now()}.m4a`;
+          await writeAsStringAsync(tempUri, base64Data, { encoding: EncodingType.Base64 });
           playUri = tempUri;
         }
       }
@@ -818,7 +811,7 @@ export default function ChatScreen() {
           ) : hasContent ? (
             <Pressable
               style={({ pressed }) => [styles.actionCircle, { backgroundColor: C.accent }, pressed && { opacity: 0.8, transform: [{ scale: 0.92 }] }]}
-              onPress={sendMessage}
+              onPress={() => sendMessage()}
             >
               <Ionicons name="arrow-up" size={22} color="#FFF" />
             </Pressable>
@@ -833,11 +826,6 @@ export default function ChatScreen() {
               hitSlop={4}
             >
               <Ionicons name="mic" size={21} color={recording ? '#FFF' : C.btnText} />
-              {recording && (
-                <View style={[styles.recordBadge, { backgroundColor: C.danger, borderColor: C.headerBg }]}>
-                  <ThemedText style={styles.recordBadgeText}>{formatDuration(recordDuration)}</ThemedText>
-                </View>
-              )}
             </Pressable>
           )}
         </View>

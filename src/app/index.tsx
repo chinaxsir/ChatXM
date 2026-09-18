@@ -63,11 +63,12 @@ export default function ChatScreen() {
   const [showImageSrc, setShowImageSrc] = useState(false);
   const [actionIdx, setActionIdx] = useState<number | null>(null);
   const [searchKw, setSearchKw] = useState('');
-  // 音频直传模式（expo-audio）
+  // 语音识别与录音模式（expo-audio + Whisper STT）
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
   const recording = recorderState.isRecording;
   const recordDuration = Math.floor(recorderState.durationMillis / 1000);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [audioPreview, setAudioPreview] = useState<string | null>(null); // 待发送的录音 base64
   const [recordedDuration, setRecordedDuration] = useState(0); // 已完成录音的时长（秒）
   const playingPlayerRef = useRef<AudioPlayer | null>(null);
@@ -284,11 +285,10 @@ export default function ChatScreen() {
     return prompt;
   };
 
-  const sendMessage = async (overrideAudio?: string, overrideDuration?: number) => {
-    if (sending) return;
-    const currentAudio = overrideAudio !== undefined ? overrideAudio : audioPreview;
-    const currentDuration = overrideDuration !== undefined ? overrideDuration : recordedDuration;
-    if (!input.trim() && !image && !fileName && !currentAudio) return;
+  const sendMessage = async (overrideText?: string) => {
+    if (sending || isTranscribing) return;
+    const textToSend = typeof overrideText === 'string' ? overrideText : input;
+    if (!textToSend.trim() && !image && !fileName) return;
     if (!config) return;
 
     // 余额检查：新注册用户有 $1 额度，余额耗尽则拦截
@@ -304,10 +304,15 @@ export default function ChatScreen() {
       return;
     }
 
-    const promptText = buildPrompt();
-    // 纯音频消息（无文字）时给一个默认提示
-    const displayText = input.trim() || (currentAudio ? '[语音消息]' : '');
-    const userMsg: Msg = { role: 'user', content: promptText, displayContent: displayText, image, fileName, audio: currentAudio, audioDuration: currentDuration };
+    // 组装最终提示文本（含文件内容）
+    let promptText = textToSend;
+    if (fileName && fileContent) {
+      const fileBlock = `\n\n--- 附件文件: ${fileName} ---\n${fileContent}\n--- 附件文件结束 ---\n`;
+      promptText = promptText ? `${promptText}${fileBlock}` : fileBlock.trim();
+    }
+
+    const displayText = textToSend.trim();
+    const userMsg: Msg = { role: 'user', content: promptText, displayContent: displayText, image, fileName };
     const aiMsgKey = 'ai_' + Date.now();
     const aiMsg: Msg = { role: 'assistant', content: '' };
     const newMessages = [...messages, userMsg, aiMsg];
@@ -351,7 +356,6 @@ export default function ChatScreen() {
           model: target.model,
           prompt: promptText,
           image: image || undefined,
-          audio: audioPreview || undefined,
           history: JSON.stringify(messages),
         },
         (delta) => {
@@ -490,7 +494,7 @@ export default function ChatScreen() {
     }
   };
 
-  // 松开停止录音并转 base64
+  // 松开停止录音并调用 STT 转为文字，自动与 AI 交互
   const stopRecording = async () => {
     if (!audioRecorder.isRecording) return;
     try {
@@ -499,16 +503,32 @@ export default function ChatScreen() {
       const uri = audioRecorder.uri;
       if (!uri) return;
       if (duration < 1) {
-        Alert.alert('Frapi AI', '录音时间过短');
+        Alert.alert('Frapi AI', '录音时间过短，请长按说话');
         return;
       }
-      const dataUrl = await uriToAudioDataUrl(uri);
-      setRecordedDuration(duration);
-      setAudioPreview(dataUrl);
-      // 自动发送
-      await sendMessage(dataUrl, duration);
+      setIsTranscribing(true);
+      const target = resolveTarget();
+      if (!target.token) {
+        Alert.alert('Frapi AI', '未配置 API Key');
+        setIsTranscribing(false);
+        return;
+      }
+      // 调用 STT 接口
+      const text = await api.transcribeAudio({
+        endpoint: target.endpoint,
+        token: target.token,
+        uri,
+      });
+      setIsTranscribing(false);
+      if (text && text.trim()) {
+        // 自动将转写出的文字直接发送与 AI 交互
+        sendMessage(text.trim());
+      } else {
+        Alert.alert('Frapi AI', '未能识别语音内容，请重试');
+      }
     } catch (e: any) {
-      Alert.alert('Frapi AI', '录音处理失败: ' + (e?.message || e));
+      setIsTranscribing(false);
+      Alert.alert('Frapi AI', '语音识别失败: ' + (e?.message || e));
     }
   };
 
@@ -580,8 +600,8 @@ export default function ChatScreen() {
 
   const currentLabel = model === 'frapi' ? '官方 API' : (thirdPartyModels.find(m => m.value === model)?.label || '官方 API');
 
-  // 是否有可发送内容（文字 / 图片 / 文件 / 待发送语音）
-  const hasContent = !!(input.trim() || image || fileName || audioPreview);
+  // 是否有可发送内容（文字 / 图片 / 文件）
+  const hasContent = !!(input.trim() || image || fileName);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: C.bg }]}>
@@ -740,12 +760,22 @@ export default function ChatScreen() {
               <Ionicons name="mic" size={16} color={C.danger} />
               <Text style={{ color: C.danger, fontSize: 14 }}>录音中 {formatDuration(recordDuration)}</Text>
             </View>
-            <ThemedText style={{ color: C.sub, fontSize: 12 }}>松开手指发送语音</ThemedText>
+            <ThemedText style={{ color: C.sub, fontSize: 12 }}>松手转文字发送</ThemedText>
+          </View>
+        )}
+
+        {/* 语音识别转写中提示 */}
+        {isTranscribing && (
+          <View style={[styles.recordingTip, { backgroundColor: C.accentSoft }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="sparkles" size={16} color={C.accent} />
+              <Text style={{ color: C.accent, fontSize: 14, fontWeight: '600' }}>语音识别转文字中...</Text>
+            </View>
           </View>
         )}
 
         {/* 待发送附件预览 */}
-        {(image || fileName || audioPreview) && (
+        {(image || fileName) && (
           <View style={[styles.previewBar, { backgroundColor: C.headerBg }]}>
             {!!image && (
               <View style={styles.previewItem}>
@@ -760,16 +790,6 @@ export default function ChatScreen() {
                 <Text style={styles.fileIcon}>📄</Text>
                 <ThemedText style={[styles.fileName, { color: C.aiText, flex: 1 }]} numberOfLines={1}>{fileName}</ThemedText>
                 <TouchableOpacity onPress={() => { setFileName(null); setFileContent(null); }}>
-                  <Text style={{ color: C.danger }}>✕</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-            {!!audioPreview && (
-              <View style={[styles.audioPreview, { backgroundColor: C.inputBg }]}>
-                <Ionicons name="mic-circle" size={22} color={C.accent} />
-                <ThemedText style={[styles.fileName, { color: C.aiText }]}>语音消息</ThemedText>
-                <ThemedText style={{ color: C.sub, fontSize: 12 }}>{formatDuration(recordedDuration)}</ThemedText>
-                <TouchableOpacity onPress={() => { setAudioPreview(null); setRecordedDuration(0); }} style={{ marginLeft: 8 }}>
                   <Text style={{ color: C.danger }}>✕</Text>
                 </TouchableOpacity>
               </View>
@@ -830,15 +850,6 @@ export default function ChatScreen() {
           )}
         </View>
       </KeyboardAvoidingView>
-
-      {/* 录音状态浮层（按住麦克风时居中弹出） */}
-      {recording && (
-        <View style={styles.recordingOverlay}>
-          <Ionicons name="mic" size={42} color="#FFF" />
-          <ThemedText style={styles.recordingOverlayText}>正在录音...</ThemedText>
-          <ThemedText style={styles.recordingOverlayTime}>{formatDuration(recordDuration)}</ThemedText>
-        </View>
-      )}
 
       {/* 历史会话面板 */}
       <Modal visible={showHistory} animationType="slide" transparent onRequestClose={() => { setShowHistory(false); setSearchKw(''); }}>
@@ -1028,29 +1039,4 @@ const styles = StyleSheet.create({
   recordBadgeText: { color: '#FFF', fontSize: 9, fontWeight: '600' },
   // 音频预览
   audioPreview: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 10, borderRadius: 10, minHeight: 44 },
-  recordingOverlay: {
-    position: 'absolute',
-    top: '40%',
-    left: '50%',
-    transform: [{ translateX: -75 }, { translateY: -75 }],
-    width: 150,
-    height: 150,
-    borderRadius: 20,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 9999,
-  },
-  recordingOverlayText: {
-    color: '#FFF',
-    fontSize: 14,
-    marginTop: 10,
-    fontWeight: '500',
-  },
-  recordingOverlayTime: {
-    color: '#FF6B6B',
-    fontSize: 18,
-    fontWeight: '700',
-    marginTop: 6,
-  },
 });

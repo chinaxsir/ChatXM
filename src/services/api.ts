@@ -11,6 +11,57 @@ function normalizeEndpoint(url: string): string {
   return base.replace(/\/+$/,'');
 }
 
+// 剥离 HTML 标签并解码实体，用于把服务器返回的 HTML 错误页转成纯文本
+function stripHtml(html: string): string {
+  if (!html) return '';
+  return html
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// HTTP 状态码 → 友好提示
+const STATUS_HINTS: Record<number, string> = {
+  400: '请求格式错误',
+  401: 'API Key 无效或已过期，请检查后重试',
+  403: '无权限访问该接口',
+  404: '接口地址不存在，请检查 Endpoint 配置是否正确',
+  408: '请求超时，请检查网络后重试',
+  429: '请求过于频繁，请稍后重试',
+  500: '服务器内部错误',
+  502: '网关错误',
+  503: '服务暂不可用',
+  504: '网关超时',
+};
+
+// 构造用户友好的错误提示：优先状态码提示，其次尝试解析响应体（JSON/纯文本），最后兜底
+function friendlyError(status: number, rawText: string): string {
+  const hint = STATUS_HINTS[status];
+  let detail = '';
+  const trimmed = rawText?.trim() || '';
+  if (trimmed) {
+    // 尝试解析 JSON 错误（OpenAI 兼容格式：{ error: { message: "..." } }）
+    try {
+      const obj = JSON.parse(trimmed);
+      detail = obj?.error?.message || obj?.message || obj?.error || '';
+    } catch {
+      // 非 JSON，剥离 HTML 后取前 80 字符
+      const plain = stripHtml(trimmed);
+      detail = plain.length > 80 ? plain.slice(0, 80) + '...' : plain;
+    }
+  }
+  if (hint && detail) return `${hint}（${detail}）`;
+  if (hint) return hint;
+  if (detail) return detail;
+  return `HTTP ${status} 请求失败`;
+}
+
 export const api = {
   // 登录
   async login(credentials: any) {
@@ -167,6 +218,10 @@ export const api = {
         } : { role: "user", content: args.prompt }]),
       }),
     });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(friendlyError(response.status, errText));
+    }
     return response.json();
   },
 
@@ -197,7 +252,7 @@ export const api = {
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(errText || `HTTP ${response.status}`);
+      throw new Error(friendlyError(response.status, errText));
     }
 
     // @ts-ignore

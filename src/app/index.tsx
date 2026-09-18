@@ -18,7 +18,8 @@ const BUILTIN_ENDPOINT = 'https://api.frapi.kdns.fr';
 
 type Msg = {
   role: string;
-  content: string;
+  content: string;          // 完整内容（含附件），用于 API 请求和历史持久化
+  displayContent?: string;  // 展示用的简短内容（仅用户输入文字），用于 UI 气泡
   image?: string | null;
   fileName?: string | null;
 };
@@ -177,18 +178,42 @@ export default function ChatScreen() {
         setImage(dataUrl);
       } else {
         // 文本类文件：读取内容
-        const textExts = ['.txt', '.md', '.json', '.js', '.ts', '.tsx', '.jsx', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.css', '.html', '.xml', '.yaml', '.yml', '.sh', '.log'];
+        const textExts = ['.txt', '.md', '.json', '.js', '.ts', '.tsx', '.jsx', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.css', '.html', '.xml', '.yaml', '.yml', '.sh', '.log', '.ini', '.conf', '.env', '.csv', '.sql', '.dart', '.kt', '.swift', '.rb', '.php'];
         const isText = textExts.some(ext => file.name.toLowerCase().endsWith(ext)) || mime.startsWith('text/');
         let content = '';
+        let readError = '';
         if (isText) {
           try {
             content = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.UTF8 });
-          } catch {
-            content = '';
+          } catch (e: any) {
+            readError = e?.message || String(e);
           }
+        } else {
+          readError = '不支持的文件类型（仅支持文本类文件，如 .txt/.md/.json/.py 等）';
         }
+
+        // 读取失败或内容为空时显式提示，避免 AI 收到空内容
+        if (!content.trim()) {
+          Alert.alert(
+            'Frapi AI',
+            readError
+              ? `文件内容读取失败：${readError}`
+              : `文件「${file.name}」内容为空，AI 将无法读取其内容`
+          );
+          return;
+        }
+
+        // 大文件截断（避免超出模型上下文），约 12000 字符
+        const MAX_LEN = 12000;
+        let finalContent = content;
+        let truncatedNotice = '';
+        if (content.length > MAX_LEN) {
+          finalContent = content.slice(0, MAX_LEN);
+          truncatedNotice = `\n（注：文件过大，已截断至前 ${MAX_LEN} 字符，完整内容请分段上传）`;
+        }
+
         setFileName(file.name);
-        setFileContent(content);
+        setFileContent(finalContent + truncatedNotice);
       }
     } catch (e: any) {
       Alert.alert('Frapi AI', '选择文件失败: ' + (e?.message || e));
@@ -204,12 +229,12 @@ export default function ChatScreen() {
     return { endpoint: config?.builtin_endpoint || BUILTIN_ENDPOINT, token: config?.primary_api_key || config?.api_keys?.[0] || '', model };
   };
 
-  // 组装最终提示文本（含文件内容）
+  // 组装最终提示文本（含文件内容）——用明确分隔符包裹，避免 AI 忽略附件内容
   const buildPrompt = () => {
     let prompt = input;
-    if (fileName) {
-      const tag = `\n[附件: ${fileName}]\n${fileContent || ''}\n`;
-      prompt = prompt ? `${prompt}\n${tag}` : tag.trim();
+    if (fileName && fileContent) {
+      const fileBlock = `\n\n--- 附件文件: ${fileName} ---\n${fileContent}\n--- 附件文件结束 ---\n`;
+      prompt = prompt ? `${prompt}${fileBlock}` : fileBlock.trim();
     }
     return prompt;
   };
@@ -233,7 +258,7 @@ export default function ChatScreen() {
     }
 
     const promptText = buildPrompt();
-    const userMsg: Msg = { role: 'user', content: input, image, fileName };
+    const userMsg: Msg = { role: 'user', content: promptText, displayContent: input, image, fileName };
     const aiMsgKey = 'ai_' + Date.now();
     const aiMsg: Msg = { role: 'assistant', content: '' };
     const newMessages = [...messages, userMsg, aiMsg];
@@ -364,7 +389,8 @@ export default function ChatScreen() {
   const closeAction = () => setActionIdx(null);
   const copyMsg = async () => {
     if (actionIdx == null) return;
-    const text = messages[actionIdx]?.content || '';
+    const m = messages[actionIdx];
+    const text = m?.displayContent || m?.content || '';
     await Clipboard.setStringAsync(text);
     closeAction();
   };
@@ -372,7 +398,7 @@ export default function ChatScreen() {
     if (actionIdx == null) return;
     const m = messages[actionIdx];
     if (m?.role === 'user' && m.content) {
-      setInput(m.content);
+      setInput(m.displayContent || m.content);
       setActionIdx(null);
     }
   };
@@ -389,7 +415,7 @@ export default function ChatScreen() {
     if (messages.length === 0) { Alert.alert('Frapi AI', '当前会话无内容可导出'); return; }
     const text = messages.map(m => {
       const role = m.role === 'user' ? '我' : 'AI';
-      return `[${role}]\n${m.content}`;
+      return `[${role}]\n${m.displayContent || m.content}`;
     }).join('\n\n');
     const full = `Frapi AI 会话导出\n时间: ${new Date().toLocaleString()}\n模型: ${model === 'frapi' ? '官方 API' : model}\n\n${text}`;
     await Clipboard.setStringAsync(full);
@@ -551,7 +577,7 @@ export default function ChatScreen() {
                     </Markdown>
                   ) : (
                     <ThemedText style={[styles.msgText, { color: '#FFFFFF' }]}>
-                      {item.content}
+                      {item.displayContent || item.content}
                     </ThemedText>
                   )
                 )}

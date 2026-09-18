@@ -808,23 +808,18 @@ export default function ChatScreen() {
               <Ionicons name="arrow-up" size={22} color="#FFF" />
             </Pressable>
           ) : (
-            <Pressable
-              style={[
-                styles.actionCircle,
-                { backgroundColor: recording ? C.danger : C.btnBg },
-              ]}
-              onPressIn={startRecording}
-              onPressOut={stopRecording}
-              hitSlop={4}
-            >
-              <Ionicons name="mic" size={21} color={recording ? '#FFF' : C.btnText} />
-              {recording && (
-                <View style={[styles.recordBadge, { backgroundColor: C.danger, borderColor: C.headerBg }]}>
-                  <ThemedText style={styles.recordBadgeText}>{formatDuration(recordDuration)}</ThemedText>
-                </View>
-              )}
-            </Pressable>
-          )}
+          <Pressable
+            style={[
+              styles.actionCircle,
+              { backgroundColor: recording ? C.danger : C.btnBg },
+            ]}
+            onPressIn={startRecording}
+            onPressOut={stopRecording}
+            hitSlop={4}
+          >
+            <Ionicons name="mic" size={21} color={recording ? '#FFF' : C.btnText} />
+          </Pressable>
+        )}
         </View>
       </KeyboardAvoidingView>
 
@@ -1010,10 +1005,7 @@ const styles = StyleSheet.create({
   audioWave: { flexDirection: 'row', alignItems: 'center', gap: 2, flex: 1, marginLeft: 2 },
   audioWaveBar: { width: 3, borderRadius: 2 },
   audioDuration: { fontSize: 12 },
-  // 录音徽章
-  recordBadge: { position: 'absolute', top: -4, right: -10, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 6, minWidth: 32, alignItems: 'center', borderWidth: 1.5 },
   recordingTip: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10 },
-  recordBadgeText: { color: '#FFF', fontSize: 9, fontWeight: '600' },
   // 音频预览
   audioPreview: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 10, borderRadius: 10, minHeight: 44 },
 });

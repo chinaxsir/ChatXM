@@ -11,6 +11,7 @@ import { api } from '@/services/api';
 import * as Clipboard from 'expo-clipboard';
 import Markdown from 'react-native-markdown-display';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import LoginScreen from './login';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 
@@ -49,11 +50,21 @@ export default function ChatScreen() {
   // 端侧语音识别模式（expo-speech-recognition，完全调用系统原生识别，不经过API）
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [recognizedText, setRecognizedText] = useState('');
+  // 上滑取消状态、录音秒数（商业级按住说话交互）
+  const [voiceCanceling, setVoiceCanceling] = useState(false);
+  const [voiceSeconds, setVoiceSeconds] = useState(0);
   const recording = isTranscribing;
   // ref 保存最新识别文本，解决松手瞬间 state 尚未更新的时序问题
   const recognizedRef = useRef('');
   // 防止同一段语音被重复发送（final 事件 + 兜底定时器竞态）
   const voiceSendLockRef = useRef(false);
+  // 手势与计时器 refs
+  const voiceStartYRef = useRef<number | null>(null);
+  const voiceCancelingRef = useRef(false);
+  const voiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const inputRef = useRef<TextInput>(null);
+  // 录音声波动画（4 根跳动条）
+  const waveAnims = useRef([...Array(4)].map(() => new Animated.Value(0.35))).current;
 
   useSpeechRecognitionEvent('result', (event) => {
     const text = event.results[0]?.transcript;
@@ -97,6 +108,25 @@ export default function ChatScreen() {
     loops.forEach(l => l.start());
     return () => loops.forEach(l => l.stop());
   }, [sending, dotAnims]);
+
+  // 录音中声波跳动动画
+  useEffect(() => {
+    if (!recording) {
+      waveAnims.forEach(v => v.setValue(0.35));
+      return;
+    }
+    const loops = waveAnims.map((v, i) =>
+      Animated.loop(Animated.sequence([
+        Animated.timing(v, { toValue: 1, duration: 380, delay: i * 130, useNativeDriver: true }),
+        Animated.timing(v, { toValue: 0.35, duration: 380, useNativeDriver: true }),
+      ]))
+    );
+    loops.forEach(l => l.start());
+    return () => loops.forEach(l => l.stop());
+  }, [recording, waveAnims]);
+
+  // 卸载时清理语音计时器
+  useEffect(() => () => { if (voiceTimerRef.current) clearInterval(voiceTimerRef.current); }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -202,15 +232,24 @@ export default function ChatScreen() {
 
   const pickFile = async () => {
     try {
+      // 放开为移动端常用全格式：图片 / PDF / Office / 文本代码 / 压缩包等，再按类型分流
       const result = await DocumentPicker.getDocumentAsync({
-        type: ['image/*', 'text/plain', 'application/pdf', 'application/json', 'text/markdown', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+        type: Platform.OS === 'ios' ? ['public.item'] : ['*/*'],
         copyToCacheDirectory: true,
       });
       if (result.canceled || !result.assets?.[0]) return;
       const file = result.assets[0];
       const mime = file.mimeType || '';
-      if (mime.startsWith('image/')) {
-        // 图片走图片通道
+      const lowerName = file.name.toLowerCase();
+
+      // 二进制办公/压缩类（端侧无法提取文本），给出明确商业提示而非静默失败
+      const binaryExts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.rar', '.7z', '.pages', '.numbers', '.key'];
+      const isBinaryDoc = binaryExts.some(ext => lowerName.endsWith(ext))
+        || ['application/pdf', 'application/zip', 'application/x-rar-compressed'].includes(mime)
+        || mime.includes('officedocument') || mime.startsWith('application/msword');
+
+      if (mime.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.heic', '.heif', '.bmp'].some(ext => lowerName.endsWith(ext))) {
+        // 图片统一走图片通道：压缩到 1024px 宽 / JPEG 60%
         let dataUrl = '';
         try {
           const rendered = await ImageManipulator.manipulate(file.uri).resize({ width: 1024 }).renderAsync();
@@ -220,10 +259,15 @@ export default function ChatScreen() {
           dataUrl = file.uri;
         }
         setImage(dataUrl);
+      } else if (isBinaryDoc) {
+        Alert.alert(
+          '暂不支持该文件格式',
+          `「${file.name}」属于二进制文档，当前版本支持：\n• 图片（PNG/JPG/HEIC 等）\n• 文本与代码（TXT/MD/JSON/PY 等）\n\n建议将文档内容复制为文本，或截图后以图片发送。`
+        );
       } else {
         // 文本类文件：读取内容
-        const textExts = ['.txt', '.md', '.json', '.js', '.ts', '.tsx', '.jsx', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.css', '.html', '.xml', '.yaml', '.yml', '.sh', '.log', '.ini', '.conf', '.env', '.csv', '.sql', '.dart', '.kt', '.swift', '.rb', '.php'];
-        const isText = textExts.some(ext => file.name.toLowerCase().endsWith(ext)) || mime.startsWith('text/');
+        const textExts = ['.txt', '.md', '.markdown', '.json', '.js', '.ts', '.tsx', '.jsx', '.py', '.java', '.go', '.rs', '.c', '.cpp', '.h', '.css', '.html', '.xml', '.yaml', '.yml', '.sh', '.log', '.ini', '.conf', '.env', '.csv', '.sql', '.dart', '.kt', '.swift', '.rb', '.php', '.vue', '.scss', '.less'];
+        const isText = textExts.some(ext => lowerName.endsWith(ext)) || mime.startsWith('text/') || mime.includes('json') || mime.includes('xml');
         let content = '';
         let readError = '';
         if (isText) {
@@ -233,7 +277,7 @@ export default function ChatScreen() {
             readError = e?.message || String(e);
           }
         } else {
-          readError = '不支持的文件类型（仅支持文本类文件，如 .txt/.md/.json/.py 等）';
+          readError = '不支持的文件类型（支持图片，以及 .txt/.md/.json/.py 等文本与代码文件）';
         }
 
         // 读取失败或内容为空时显式提示，避免 AI 收到空内容
@@ -475,6 +519,11 @@ export default function ChatScreen() {
   };
 
   // ========== 语音输入（调用设备端侧原生语音识别，零 API 依赖） ==========
+  const clearVoiceTimer = () => {
+    if (voiceTimerRef.current) { clearInterval(voiceTimerRef.current); voiceTimerRef.current = null; }
+  };
+
+  // 按下：立即启动识别（单一主路径，不设点击/长按阈值，保证好按）
   const startRecording = async () => {
     try {
       const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
@@ -482,8 +531,13 @@ export default function ChatScreen() {
         Alert.alert('Frapi AI', '需要麦克风与语音识别权限，请在系统设置中开启');
         return;
       }
+      inputRef.current?.blur(); // 收起键盘，避免输入区高度跳动
       recognizedRef.current = '';
       voiceSendLockRef.current = false;
+      voiceStartYRef.current = null;
+      voiceCancelingRef.current = false;
+      setVoiceCanceling(false);
+      setVoiceSeconds(0);
       setRecognizedText('');
       setInput('');
       setIsTranscribing(true);
@@ -493,32 +547,75 @@ export default function ChatScreen() {
         continuous: false,
         addsPunctuation: true,
       });
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+      clearVoiceTimer();
+      voiceTimerRef.current = setInterval(() => setVoiceSeconds(s => s + 1), 1000);
     } catch (e: any) {
+      clearVoiceTimer();
       setIsTranscribing(false);
       Alert.alert('Frapi AI', '启动语音识别失败: ' + (e?.message || e));
     }
   };
 
-  // 松开停止识别，并自动发送识别出的文字与 AI 交互
-  const stopRecording = () => {
+  // 手指滑动追踪：上滑超过 70px 进入「取消发送」态
+  const handleVoiceMove = (e: any) => {
+    if (!isTranscribing) return;
+    const y = e.nativeEvent?.pageY;
+    if (typeof y !== 'number') return;
+    if (voiceStartYRef.current == null) voiceStartYRef.current = y;
+    const cancel = voiceStartYRef.current - y > 70;
+    if (cancel !== voiceCancelingRef.current) {
+      voiceCancelingRef.current = cancel;
+      setVoiceCanceling(cancel);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    }
+  };
+
+  const finishVoice = (canceled: boolean) => {
+    clearVoiceTimer();
     try {
-      ExpoSpeechRecognitionModule.stop();
+      if (canceled) {
+        ExpoSpeechRecognitionModule.abort();
+      } else {
+        ExpoSpeechRecognitionModule.stop();
+      }
     } catch {}
-    setIsTranscribing(false);
+
+    if (canceled) {
+      recognizedRef.current = '';
+      setRecognizedText('');
+      setInput('');
+      setIsTranscribing(false);
+      setVoiceCanceling(false);
+      voiceCancelingRef.current = false;
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      return;
+    }
+
     // iOS 在 stop() 后才会回调最终结果，延迟读取 ref 兜底；voiceSendLockRef 防止重复发送
     setTimeout(() => {
       if (voiceSendLockRef.current) return;
       const text = recognizedRef.current.trim();
       recognizedRef.current = '';
       setRecognizedText('');
+      setIsTranscribing(false);
+      setVoiceCanceling(false);
+      voiceCancelingRef.current = false;
       if (text) {
         voiceSendLockRef.current = true;
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         sendMessage(text);
         setTimeout(() => { voiceSendLockRef.current = false; }, 500);
       } else {
         setInput('');
       }
     }, 400);
+  };
+
+  // 松开：取消态 → 放弃；正常态 → 识别并自动发送
+  const stopRecording = () => {
+    if (!isTranscribing) return;
+    finishVoice(voiceCancelingRef.current);
   };
 
   // 切换模型并持久化到本地配置，重启后保留选择
@@ -680,17 +777,6 @@ export default function ChatScreen() {
           />
         )}
 
-        {/* 端侧语音识别中状态提示 */}
-        {isTranscribing && (
-          <View style={[styles.recordingTip, { backgroundColor: C.accentSoft }]}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="mic" size={16} color={C.danger} />
-              <Text style={{ color: C.danger, fontSize: 14, fontWeight: '600' }}>正在聆听，松手自动发送...</Text>
-            </View>
-            <ThemedText style={{ color: C.sub, fontSize: 12 }}>{recognizedText || '请说话...'}</ThemedText>
-          </View>
-        )}
-
         {/* 待发送附件预览 */}
         {(image || fileName) && (
           <View style={[styles.previewBar, { backgroundColor: C.headerBg }]}>
@@ -714,23 +800,24 @@ export default function ChatScreen() {
           </View>
         )}
 
-        {/* 输入区：图片 | 文件 | 输入框 | 麦克风/发送/停止 */}
+        {/* 输入区：图片 | 附件 | 输入框 | 麦克风/发送/停止 */}
         <View style={[styles.inputBar, { backgroundColor: C.headerBg, borderTopColor: C.border }]}>
           <Pressable
             style={({ pressed }) => [styles.iconCircle, { backgroundColor: C.btnBg }, pressed && { opacity: 0.5 }]}
             onPress={onPressImage}
-            hitSlop={4}
+            hitSlop={8}
           >
-            <Ionicons name="image-outline" size={21} color={C.btnText} />
+            <Ionicons name="image-outline" size={22} color={C.btnText} />
           </Pressable>
           <Pressable
             style={({ pressed }) => [styles.iconCircle, { backgroundColor: C.btnBg }, pressed && { opacity: 0.5 }]}
             onPress={pickFile}
-            hitSlop={4}
+            hitSlop={8}
           >
-            <Ionicons name="document-text-outline" size={21} color={C.btnText} />
+            <Ionicons name="attach-outline" size={23} color={C.btnText} />
           </Pressable>
           <TextInput
+            ref={inputRef}
             style={[styles.input, { backgroundColor: C.inputBg, color: C.aiText }]}
             value={input}
             onChangeText={setInput}
@@ -740,33 +827,74 @@ export default function ChatScreen() {
           />
           {sending ? (
             <Pressable
-              style={({ pressed }) => [styles.actionCircle, { backgroundColor: C.danger }, pressed && { opacity: 0.8 }]}
+              style={({ pressed }) => [styles.actionCircle, { backgroundColor: C.danger }, pressed && { opacity: 0.85, transform: [{ scale: 0.94 }] }]}
               onPress={stopStreaming}
+              hitSlop={8}
             >
-              <Ionicons name="stop" size={18} color="#FFF" />
+              <Ionicons name="stop" size={20} color="#FFF" />
             </Pressable>
           ) : hasContent ? (
             <Pressable
-              style={({ pressed }) => [styles.actionCircle, { backgroundColor: C.accent }, pressed && { opacity: 0.8, transform: [{ scale: 0.92 }] }]}
+              style={({ pressed }) => [styles.actionCircle, { backgroundColor: C.accent }, pressed && { opacity: 0.85, transform: [{ scale: 0.92 }] }]}
               onPress={() => sendMessage()}
+              hitSlop={8}
             >
-              <Ionicons name="arrow-up" size={22} color="#FFF" />
+              <Ionicons name="arrow-up" size={24} color="#FFF" />
             </Pressable>
           ) : (
             <Pressable
-              style={[
+              style={({ pressed }) => [
                 styles.actionCircle,
-                { backgroundColor: recording ? C.danger : C.btnBg },
+                {
+                  backgroundColor: voiceCanceling ? C.sub : (recording ? C.danger : C.btnBg),
+                  transform: [{ scale: recording ? 1.12 : (pressed ? 1.06 : 1) }],
+                },
               ]}
               onPressIn={startRecording}
               onPressOut={stopRecording}
-              hitSlop={4}
+              onTouchMove={handleVoiceMove}
+              hitSlop={8}
             >
-              <Ionicons name="mic" size={21} color={recording ? '#FFF' : C.btnText} />
+              <Ionicons name={voiceCanceling ? 'trash-outline' : 'mic'} size={24} color={recording ? '#FFF' : C.btnText} />
             </Pressable>
           )}
         </View>
       </KeyboardAvoidingView>
+
+      {/* 按住说话全屏浮层：声波 + 时长 + 实时文本 + 上滑取消 */}
+      {recording && (
+        <View style={styles.voiceOverlay} pointerEvents="none">
+          <View style={[styles.voiceCard, { borderColor: voiceCanceling ? C.danger : 'rgba(255,255,255,0.12)' }]}>
+            <View style={[styles.voiceMicCircle, { backgroundColor: voiceCanceling ? C.danger : 'rgba(255,255,255,0.14)' }]}>
+              <Ionicons name={voiceCanceling ? 'trash-outline' : 'mic'} size={34} color="#FFF" />
+            </View>
+            <View style={styles.voiceWave}>
+              {waveAnims.map((anim, i) => (
+                <Animated.View
+                  key={i}
+                  style={[
+                    styles.voiceWaveBar,
+                    {
+                      backgroundColor: voiceCanceling ? C.danger : '#0A84FF',
+                      opacity: anim,
+                      transform: [{ scaleY: anim.interpolate({ inputRange: [0.35, 1], outputRange: [0.5, 1.3] }) }],
+                    },
+                  ]}
+                />
+              ))}
+            </View>
+            <Text style={styles.voiceTime}>
+              {String(Math.floor(voiceSeconds / 60)).padStart(2, '0')}:{String(voiceSeconds % 60).padStart(2, '0')}
+            </Text>
+            {!!recognizedText && (
+              <Text style={styles.voicePreviewText} numberOfLines={3}>{recognizedText}</Text>
+            )}
+            <Text style={styles.voiceHint}>
+              {voiceCanceling ? '松开手指，取消发送' : '松开手指，自动发送　·　上滑取消'}
+            </Text>
+          </View>
+        </View>
+      )}
 
       {/* 历史会话面板 */}
       <Modal visible={showHistory} animationType="slide" transparent onRequestClose={() => { setShowHistory(false); setSearchKw(''); }}>
@@ -931,12 +1059,12 @@ const styles = StyleSheet.create({
   previewRemove: { position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: 10, backgroundColor: '#E53E3E', alignItems: 'center', justifyContent: 'center' },
   previewRemoveText: { color: '#FFF', fontSize: 11, lineHeight: 13 },
   filePreview: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, borderRadius: 10, height: 44 },
-  inputBar: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 10, paddingVertical: 8, borderTopWidth: 1, gap: 6 },
+  inputBar: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 10, paddingVertical: 8, borderTopWidth: 1, gap: 7 },
   // 输入栏左侧附件圆形按钮（图片/文件）
-  iconCircle: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
+  iconCircle: { width: 42, height: 42, borderRadius: 21, justifyContent: 'center', alignItems: 'center', marginBottom: 1 },
   // 输入栏右侧动作圆形按钮（麦克风/发送/停止）
-  actionCircle: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
-  input: { flex: 1, minHeight: 36, maxHeight: 100, borderRadius: 18, paddingHorizontal: 14, paddingTop: 8, paddingBottom: 8, fontSize: 16 },
+  actionCircle: { width: 42, height: 42, borderRadius: 21, justifyContent: 'center', alignItems: 'center', marginBottom: 1 },
+  input: { flex: 1, minHeight: 42, maxHeight: 100, borderRadius: 21, paddingHorizontal: 15, paddingTop: 10, paddingBottom: 10, fontSize: 16 },
   modalMask: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   actionSheet: { borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 8 },
   actionItem: { padding: 16, borderBottomWidth: StyleSheet.hairlineWidth, alignItems: 'center' },
@@ -945,5 +1073,13 @@ const styles = StyleSheet.create({
   searchInput: { borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 10, fontSize: 14 },
   sessionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, gap: 8 },
   modelOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 4, borderBottomWidth: StyleSheet.hairlineWidth },
-  recordingTip: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10 },
+  // 按住说话全屏浮层
+  voiceOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
+  voiceCard: { width: 210, minHeight: 230, paddingVertical: 26, paddingHorizontal: 18, borderRadius: 22, backgroundColor: 'rgba(28,28,30,0.88)', borderWidth: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  voiceMicCircle: { width: 74, height: 74, borderRadius: 37, alignItems: 'center', justifyContent: 'center' },
+  voiceWave: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 30 },
+  voiceWaveBar: { width: 4, height: 24, borderRadius: 2 },
+  voiceTime: { color: '#FFF', fontSize: 16, fontWeight: '600', fontVariant: ['tabular-nums'] },
+  voicePreviewText: { color: 'rgba(255,255,255,0.65)', fontSize: 12, lineHeight: 17, textAlign: 'center' },
+  voiceHint: { color: 'rgba(255,255,255,0.85)', fontSize: 13, fontWeight: '500', textAlign: 'center' },
 });

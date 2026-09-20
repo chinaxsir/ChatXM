@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { StyleSheet, View, Text, TextInput, TouchableOpacity, ScrollView, Modal, Alert, Platform, SafeAreaView, Dimensions, Linking, Clipboard, ActivityIndicator, Pressable } from 'react-native';
+import { StyleSheet, View, Text, TextInput, TouchableOpacity, ScrollView, Modal, Alert, Platform, SafeAreaView, Dimensions, Linking, ActivityIndicator } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useThemeMode, ThemeMode } from '@/hooks/useThemeMode';
 import { ThemedText } from '@/components/themed-text';
@@ -106,6 +107,15 @@ export default function SettingsScreen() {
     }, [])
   );
 
+  // 编辑模式下，Key 输入框留空表示沿用原密钥；此值返回实际用于请求/测试的 Key
+  // 注意：此 Hook 必须在任何提前 return 之前调用，保证每次渲染 Hook 数量一致
+  const getEffectiveApiKey = useCallback((): string => {
+    const typed = apiForm.apiKey.trim();
+    if (typed) return typed;
+    if (editingIdx != null) return config?.third_party_apis?.[editingIdx]?.apiKey || '';
+    return '';
+  }, [apiForm.apiKey, editingIdx, config]);
+
   const today = new Date().toISOString().slice(0, 10);
   const todayUsage = config?.usage?.daily?.[today];
 
@@ -170,14 +180,6 @@ export default function SettingsScreen() {
       setBusy(false);
     }
   };
-
-  // 编辑模式下，Key 输入框留空表示沿用原密钥；此值返回实际用于请求/测试的 Key
-  const getEffectiveApiKey = useCallback((): string => {
-    const typed = apiForm.apiKey.trim();
-    if (typed) return typed;
-    if (editingIdx != null) return config?.third_party_apis?.[editingIdx]?.apiKey || '';
-    return '';
-  }, [apiForm.apiKey, editingIdx, config]);
 
   // 打开「新增 API」弹窗：清空表单
   const openAddApiModal = () => {
@@ -516,7 +518,7 @@ export default function SettingsScreen() {
                 <ThemedText style={styles.buyLabel}>购买卡密</ThemedText>
                 <ThemedText style={[styles.buyHint, { color: C.sub }]}>官方店铺</ThemedText>
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => { Clipboard.setString('xsirchats'); Alert.alert('已复制', '微信号 xsirchats 已复制到剪贴板，请打开微信添加好友'); }} style={[styles.buyOption, { backgroundColor: C.bg, borderColor: C.border }]}>
+              <TouchableOpacity onPress={async () => { await Clipboard.setStringAsync('xsirchats'); Alert.alert('已复制', '微信号 xsirchats 已复制到剪贴板，请打开微信添加好友'); }} style={[styles.buyOption, { backgroundColor: C.bg, borderColor: C.border }]}>
                 <ThemedText style={[styles.buyIcon, { color: '#07C160' }]}>💬</ThemedText>
                 <ThemedText style={styles.buyLabel}>联系微信</ThemedText>
                 <ThemedText style={[styles.buyHint, { color: C.sub }]}>xsirchats</ThemedText>

@@ -76,6 +76,24 @@ function buildUserContent(args: any): any {
   return { role: 'user', content };
 }
 
+// 清洗本地历史消息：仅保留 OpenAI 协议要求的 role/content，
+// 剥离 displayContent/image/fileName/audio 等 UI 字段与空消息，避免接口 400
+function sanitizeMessages(raw: any[]): any[] {
+  return (Array.isArray(raw) ? raw : [])
+    .map((m: any) => {
+      if (!m) return null;
+      const role = m.role === 'assistant' ? 'assistant' : 'user';
+      if (typeof m.content === 'string' && m.content.trim()) {
+        return { role, content: m.content };
+      }
+      if (Array.isArray(m.content) && m.content.length > 0) {
+        return { role, content: m.content };
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
 export const api = {
   // 登录
   async login(credentials: any) {
@@ -179,6 +197,15 @@ export const api = {
     }
   },
 
+  // 当前会话 ID 持久化（重启 App 后恢复上次对话）
+  async saveLastSession(sessionId: string) {
+    await AsyncStorage.setItem('last_session_id', sessionId);
+  },
+
+  async loadLastSession(): Promise<string | null> {
+    return AsyncStorage.getItem('last_session_id');
+  },
+
   // 语音转文字（STT）
   async transcribeAudio(args: { endpoint: string; token: string; uri: string }): Promise<string> {
     const authHeader = args.token ? (args.token.startsWith('Bearer ') ? args.token : `Bearer ${args.token}`) : '';
@@ -256,7 +283,7 @@ export const api = {
       },
       body: JSON.stringify({
         model: args.model,
-        messages: JSON.parse(args.history || "[]").concat([buildUserContent(args)]),
+        messages: sanitizeMessages(JSON.parse(args.history || "[]")).concat([buildUserContent(args)]),
       }),
     });
     if (!response.ok) {
@@ -281,7 +308,7 @@ export const api = {
         model: args.model,
         stream: true,
         stream_options: { include_usage: true },
-        messages: JSON.parse(args.history || "[]").concat([buildUserContent(args)]),
+        messages: sanitizeMessages(JSON.parse(args.history || "[]")).concat([buildUserContent(args)]),
       }),
     });
 

@@ -5,32 +5,16 @@ import { useThemeMode } from '@/hooks/useThemeMode';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as DocumentPicker from 'expo-document-picker';
-import { readAsStringAsync, writeAsStringAsync, cacheDirectory, EncodingType } from 'expo-file-system/legacy';
-import { useAudioRecorder, useAudioRecorderState, AudioModule, RecordingPresets, setAudioModeAsync, createAudioPlayer, AudioPlayer } from 'expo-audio';
+import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
 import { ThemedText } from '@/components/themed-text';
 import { api } from '@/services/api';
 import * as Clipboard from 'expo-clipboard';
 import Markdown from 'react-native-markdown-display';
 import { Ionicons } from '@expo/vector-icons';
 import LoginScreen from './login';
-import { SpeechRecognition, useSpeechRecognitionEvent } from 'expo-speech-recognition';
+import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 
 const BUILTIN_ENDPOINT = 'https://api.frapi.kdns.fr';
-
-// 录音文件 URI → data URL：真机读 m4a 转 base64；Web 端录音产物为 blob: URL，用 fetch+FileReader 转换
-async function uriToAudioDataUrl(uri: string): Promise<string> {
-  if (Platform.OS === 'web') {
-    const blob = await fetch(uri).then(r => r.blob());
-    return await new Promise<string>((resolve, reject) => {
-      const reader = new (globalThis as any).FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new Error('音频读取失败'));
-      reader.readAsDataURL(blob);
-    });
-  }
-  const base64 = await readAsStringAsync(uri, { encoding: EncodingType.Base64 });
-  return `data:audio/x-m4a;base64,${base64}`;
-}
 
 type Msg = {
   role: string;
@@ -38,8 +22,6 @@ type Msg = {
   displayContent?: string;  // 展示用的简短内容（仅用户输入文字），用于 UI 气泡
   image?: string | null;
   fileName?: string | null;
-  audio?: string | null;    // 音频附件（base64 data URL）
-  audioDuration?: number;   // 音频时长（秒）
 };
 
 const palettes = {
@@ -64,28 +46,35 @@ export default function ChatScreen() {
   const [showImageSrc, setShowImageSrc] = useState(false);
   const [actionIdx, setActionIdx] = useState<number | null>(null);
   const [searchKw, setSearchKw] = useState('');
-  // 端侧语音识别模式（expo-speech-recognition）
+  // 端侧语音识别模式（expo-speech-recognition，完全调用系统原生识别，不经过API）
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [recognizedText, setRecognizedText] = useState('');
   const recording = isTranscribing;
+  // ref 保存最新识别文本，解决松手瞬间 state 尚未更新的时序问题
+  const recognizedRef = useRef('');
+  // 防止同一段语音被重复发送（final 事件 + 兜底定时器竞态）
+  const voiceSendLockRef = useRef(false);
 
   useSpeechRecognitionEvent('result', (event) => {
     const text = event.results[0]?.transcript;
     if (text) {
+      recognizedRef.current = text;
       setRecognizedText(text);
       setInput(text);
     }
   });
 
   useSpeechRecognitionEvent('error', (event) => {
-    console.warn('Speech error:', event.error);
+    setIsTranscribing(false);
+    // no-speech / aborted 属于正常交互，静默处理
+    if (event.error && event.error !== 'no-speech' && event.error !== 'aborted') {
+      Alert.alert('Frapi AI', '语音识别失败: ' + (event.message || event.error));
+    }
   });
 
   useSpeechRecognitionEvent('end', () => {
     setIsTranscribing(false);
   });
-  const playingPlayerRef = useRef<AudioPlayer | null>(null);
-  const [playingAudioIdx, setPlayingAudioIdx] = useState<number | null>(null);
   const [sessions, setSessions] = useState<any[]>([]);
   const listRef = useRef<FlatList<Msg>>(null);
   const router = useRouter();
@@ -109,16 +98,6 @@ export default function ChatScreen() {
     return () => loops.forEach(l => l.stop());
   }, [sending, dotAnims]);
 
-  // 组件卸载时释放音频播放器
-  useEffect(() => {
-    return () => {
-      if (playingPlayerRef.current) {
-        try { playingPlayerRef.current.remove(); } catch {}
-        playingPlayerRef.current = null;
-      }
-    };
-  }, []);
-
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -127,6 +106,9 @@ export default function ChatScreen() {
         if (!active) return;
         setConfig(c);
         if (c?.current_model) setModel(c.current_model);
+        // 恢复上次退出时正在查看的会话，所有历史均保存在本地
+        const lastId = await api.loadLastSession();
+        if (active && lastId) setSessionId(lastId);
       })();
       return () => { active = false; };
     }, [])
@@ -146,7 +128,9 @@ export default function ChatScreen() {
   }, []);
 
   const newChat = () => {
-    setSessionId('s_' + Date.now().toString(36));
+    const id = 's_' + Date.now().toString(36);
+    setSessionId(id);
+    api.saveLastSession(id);
     setMessages([]);
     setInput('');
     setImage(null);
@@ -157,6 +141,7 @@ export default function ChatScreen() {
 
   const openSession = (id: string) => {
     setSessionId(id);
+    api.saveLastSession(id);
     setShowHistory(false);
   };
 
@@ -336,8 +321,6 @@ export default function ChatScreen() {
     setImage(null);
     setFileName(null);
     setFileContent(null);
-    setAudioPreview(null);
-    setRecordedDuration(0);
     setSending(true);
 
     const controller = new AbortController();
@@ -491,20 +474,24 @@ export default function ChatScreen() {
     Alert.alert('Frapi AI', '会话内容已复制到剪贴板，可粘贴到任意位置保存');
   };
 
-  // ========== 语音输入（调用设备端侧原生语音识别，免 API 依赖） ==========
+  // ========== 语音输入（调用设备端侧原生语音识别，零 API 依赖） ==========
   const startRecording = async () => {
     try {
-      const perm = await SpeechRecognition.requestPermissionAsync();
+      const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!perm.granted) {
-        Alert.alert('Frapi AI', '需要语音识别权限');
+        Alert.alert('Frapi AI', '需要麦克风与语音识别权限，请在系统设置中开启');
         return;
       }
+      recognizedRef.current = '';
+      voiceSendLockRef.current = false;
       setRecognizedText('');
       setInput('');
       setIsTranscribing(true);
-      SpeechRecognition.start({
+      ExpoSpeechRecognitionModule.start({
         lang: 'zh-CN',
         interimResults: true,
+        continuous: false,
+        addsPunctuation: true,
       });
     } catch (e: any) {
       setIsTranscribing(false);
@@ -512,71 +499,37 @@ export default function ChatScreen() {
     }
   };
 
-  // 松开停止识别，并自动发送识别出的文字
-  const stopRecording = async () => {
+  // 松开停止识别，并自动发送识别出的文字与 AI 交互
+  const stopRecording = () => {
     try {
-      SpeechRecognition.stop();
+      ExpoSpeechRecognitionModule.stop();
     } catch {}
     setIsTranscribing(false);
-    // 使用函数式更新确保获取到最新的 recognizedText
+    // iOS 在 stop() 后才会回调最终结果，延迟读取 ref 兜底；voiceSendLockRef 防止重复发送
     setTimeout(() => {
-      setRecognizedText(prev => {
-        if (prev.trim()) {
-          sendMessage(prev.trim());
-        }
-        return '';
-      });
-    }, 250);
-  };
-
-  // 播放/停止消息中的音频
-  const togglePlayAudio = async (idx: number, audioUrl: string) => {
-    // 如果正在播放同一条，停止
-    if (playingAudioIdx === idx && playingPlayerRef.current) {
-      try { playingPlayerRef.current.remove(); } catch {}
-      playingPlayerRef.current = null;
-      setPlayingAudioIdx(null);
-      return;
-    }
-    // 停止之前正在播放的
-    if (playingPlayerRef.current) {
-      try { playingPlayerRef.current.remove(); } catch {}
-      playingPlayerRef.current = null;
-    }
-    try {
-      let playUri = audioUrl;
-      // 如果是 base64 data URL，先写入临时文件再播放，避免内存崩溃/闪退
-      if (audioUrl.startsWith('data:audio/')) {
-        const base64Data = audioUrl.split(',')[1];
-        if (base64Data) {
-          const tempUri = cacheDirectory + `temp_audio_${idx}_${Date.now()}.m4a`;
-          await writeAsStringAsync(tempUri, base64Data, { encoding: EncodingType.Base64 });
-          playUri = tempUri;
-        }
+      if (voiceSendLockRef.current) return;
+      const text = recognizedRef.current.trim();
+      recognizedRef.current = '';
+      setRecognizedText('');
+      if (text) {
+        voiceSendLockRef.current = true;
+        sendMessage(text);
+        setTimeout(() => { voiceSendLockRef.current = false; }, 500);
+      } else {
+        setInput('');
       }
-
-      const player = createAudioPlayer({ uri: playUri });
-      playingPlayerRef.current = player;
-      setPlayingAudioIdx(idx);
-      player.addListener('playbackStatusUpdate', (status) => {
-        if (status.didJustFinish) {
-          playingPlayerRef.current = null;
-          setPlayingAudioIdx(null);
-        }
-      });
-      player.play();
-    } catch (e: any) {
-      Alert.alert('Frapi AI', '音频播放失败: ' + (e?.message || e));
-      playingPlayerRef.current = null;
-      setPlayingAudioIdx(null);
-    }
+    }, 400);
   };
 
-  // 格式化时长 mm:ss
-  const formatDuration = (sec: number) => {
-    const m = Math.floor(sec / 60).toString().padStart(2, '0');
-    const s = (sec % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
+  // 切换模型并持久化到本地配置，重启后保留选择
+  const changeModel = async (m: string) => {
+    setModel(m);
+    setShowModel(false);
+    if (config) {
+      const updated = { ...config, current_model: m };
+      await api.saveConfig(updated);
+      setConfig(updated);
+    }
   };
 
   const handleLoginSuccess = async () => {
@@ -681,29 +634,6 @@ export default function ChatScreen() {
                   </View>
                 )}
                 {!!item.image && <Image source={{ uri: item.image }} style={styles.msgImage} resizeMode="cover" />}
-                {!!item.audio && (
-                  <Pressable
-                    style={[styles.audioBubble, { backgroundColor: item.role === 'user' ? 'rgba(255,255,255,0.2)' : C.inputBg }]}
-                    onPress={() => togglePlayAudio(index, item.audio!)}
-                  >
-                    <Ionicons
-                      name={playingAudioIdx === index ? 'pause' : 'play'}
-                      size={18}
-                      color={item.role === 'user' ? '#FFF' : C.accent}
-                    />
-                    <View style={styles.audioWave}>
-                      {[...Array(5)].map((_, i) => (
-                        <View key={i} style={[styles.audioWaveBar, {
-                          backgroundColor: item.role === 'user' ? 'rgba(255,255,255,0.6)' : C.sub,
-                          height: 8 + (i % 3) * 4,
-                        }]} />
-                      ))}
-                    </View>
-                    <ThemedText style={[styles.audioDuration, { color: item.role === 'user' ? '#FFF' : C.sub }]}>
-                      {formatDuration(item.audioDuration || 0)}
-                    </ThemedText>
-                  </Pressable>
-                )}
                 {!!item.content && (
                   item.role === 'assistant' ? (
                     <Markdown
@@ -898,7 +828,7 @@ export default function ChatScreen() {
             </View>
             <TouchableOpacity
               style={[styles.modelOption, { borderBottomColor: C.border }, model === 'frapi' && { backgroundColor: C.chip }]}
-              onPress={() => { setModel('frapi'); setShowModel(false); }}
+              onPress={() => changeModel('frapi')}
             >
               <ThemedText style={{ fontWeight: model === 'frapi' ? '600' : '400' }}>官方 API</ThemedText>
               {model === 'frapi' && <ThemedText style={{ color: C.accent }}>✓</ThemedText>}
@@ -907,7 +837,7 @@ export default function ChatScreen() {
               <TouchableOpacity
                 key={m.value}
                 style={[styles.modelOption, { borderBottomColor: C.border }, model === m.value && { backgroundColor: C.chip }]}
-                onPress={() => { setModel(m.value); setShowModel(false); }}
+                onPress={() => changeModel(m.value)}
               >
                 <ThemedText style={{ fontWeight: model === m.value ? '600' : '400' }}>{m.label}</ThemedText>
                 {model === m.value && <ThemedText style={{ color: C.accent }}>✓</ThemedText>}
@@ -1015,15 +945,5 @@ const styles = StyleSheet.create({
   searchInput: { borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 10, fontSize: 14 },
   sessionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, gap: 8 },
   modelOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 4, borderBottomWidth: StyleSheet.hairlineWidth },
-  // 音频消息气泡
-  audioBubble: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, gap: 10, minWidth: 120 },
-  audioWave: { flexDirection: 'row', alignItems: 'center', gap: 2, flex: 1, marginLeft: 2 },
-  audioWaveBar: { width: 3, borderRadius: 2 },
-  audioDuration: { fontSize: 12 },
-  // 录音徽章
-  recordBadge: { position: 'absolute', top: -4, right: -10, paddingHorizontal: 4, paddingVertical: 1, borderRadius: 6, minWidth: 32, alignItems: 'center', borderWidth: 1.5 },
   recordingTip: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10 },
-  recordBadgeText: { color: '#FFF', fontSize: 9, fontWeight: '600' },
-  // 音频预览
-  audioPreview: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 10, borderRadius: 10, minHeight: 44 },
 });

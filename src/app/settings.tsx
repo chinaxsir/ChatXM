@@ -33,6 +33,13 @@ function maskUsername(raw: string): string {
   return s[0] + '***' + s[s.length - 1];
 }
 
+// API Key 脱敏：仅保留前6后4，中间用圆点代替，用于界面提示而非明文回显
+function maskApiKey(k: string): string {
+  if (!k) return '';
+  if (k.length <= 10) return '••••••••';
+  return `${k.slice(0, 6)}••••••••${k.slice(-4)}`;
+}
+
 const palettes = {
   light: { bg: '#F5F6F8', card: '#FFFFFF', border: '#E5E5EA', sub: '#8E8E93', inputBg: '#F5F6F8', accent: '#007AFF', accentSoft: '#E8F1FF', danger: '#E53E3E', mask: 'rgba(0,0,0,0.4)', panel: '#FFFFFF', cancelBg: '#F0F0F0', cancelText: '#333333', btnBg: '#F0F2F5', btnText: '#333333' },
   dark: { bg: '#000000', card: '#1C1C1E', border: '#2C2C2E', sub: '#8E8E93', inputBg: '#2C2C2E', accent: '#0A84FF', accentSoft: '#1A3A5C', danger: '#FF6B6B', mask: 'rgba(0,0,0,0.6)', panel: '#1C1C1E', cancelBg: '#2C2C2E', cancelText: '#E5E5EA', btnBg: '#2C2C2E', btnText: '#E5E5EA' },
@@ -46,6 +53,8 @@ export default function SettingsScreen() {
   const [config, setConfig] = useState<any>(null);
   const [showRecharge, setShowRecharge] = useState(false);
   const [showAddApi, setShowAddApi] = useState(false);
+  // null = 新增模式；数字 = 正在编辑的第三方 API 索引
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [voucher, setVoucher] = useState('');
   const [busy, setBusy] = useState(false);
   const [apiForm, setApiForm] = useState({ name: '', endpoint: '', apiKey: '', models: '' });
@@ -162,9 +171,46 @@ export default function SettingsScreen() {
     }
   };
 
+  // 编辑模式下，Key 输入框留空表示沿用原密钥；此值返回实际用于请求/测试的 Key
+  const getEffectiveApiKey = useCallback((): string => {
+    const typed = apiForm.apiKey.trim();
+    if (typed) return typed;
+    if (editingIdx != null) return config?.third_party_apis?.[editingIdx]?.apiKey || '';
+    return '';
+  }, [apiForm.apiKey, editingIdx, config]);
+
+  // 打开「新增 API」弹窗：清空表单
+  const openAddApiModal = () => {
+    setEditingIdx(null);
+    setApiForm({ name: '', endpoint: '', apiKey: '', models: '' });
+    setShowKey(false);
+    setTestingApi('idle');
+    setTestMsg('');
+    setTestModels([]);
+    setShowAddApi(true);
+  };
+
+  // 打开「编辑 API」弹窗：回填名称/地址/模型，但 API Key 不回显明文（留空表示不修改）
+  const openEditApiModal = (idx: number) => {
+    const tp = config?.third_party_apis?.[idx];
+    if (!tp) return;
+    setEditingIdx(idx);
+    setApiForm({
+      name: tp.name || '',
+      endpoint: tp.endpoint || '',
+      apiKey: '',
+      models: (tp.models || []).join(', '),
+    });
+    setShowKey(false);
+    setTestingApi('idle');
+    setTestMsg('');
+    setTestModels([]);
+    setShowAddApi(true);
+  };
+
   // 独立的测试连接函数
   const testApiConnection = async () => {
-    if (!apiForm.endpoint.trim() || !apiForm.apiKey.trim()) {
+    if (!apiForm.endpoint.trim() || !getEffectiveApiKey()) {
       setTestingApi('fail');
       setTestMsg('请先填写 Endpoint 和 API Key');
       return;
@@ -173,7 +219,7 @@ export default function SettingsScreen() {
     setTestMsg('正在连接...');
     setTestModels([]);
     try {
-      const models = await api.fetchModels(apiForm.endpoint.trim(), apiForm.apiKey.trim());
+      const models = await api.fetchModels(apiForm.endpoint.trim(), getEffectiveApiKey());
       const list: string[] = models?.data?.map((m: any) => m.id).filter(Boolean) || [];
       if (list.length > 0) {
         setTestModels(list);
@@ -190,16 +236,23 @@ export default function SettingsScreen() {
     }
   };
 
-  const handleAddApi = async () => {
-    if (!apiForm.endpoint.trim() || !apiForm.apiKey.trim()) {
-      Alert.alert('Frapi AI', 'Endpoint 和 API Key 为必填项');
+  const handleSaveApi = async () => {
+    if (!apiForm.endpoint.trim()) {
+      Alert.alert('Frapi AI', 'Endpoint 为必填项');
       return;
     }
+    const isEdit = editingIdx != null;
+    // 新增必须填写 Key；编辑时 Key 留空则沿用原密钥（不回显明文，保护隐私）
+    if (!isEdit && !apiForm.apiKey.trim()) {
+      Alert.alert('Frapi AI', '新增 API 必须填写 API Key');
+      return;
+    }
+    const finalKey = getEffectiveApiKey();
     // 用已测试到的模型，或者手动输入的模型，或者重新获取一次
     let list: string[] = [...testModels];
     if (list.length === 0) {
       try {
-        const models = await api.fetchModels(apiForm.endpoint.trim(), apiForm.apiKey.trim());
+        const models = await api.fetchModels(apiForm.endpoint.trim(), finalKey);
         list = models?.data?.map((m: any) => m.id).filter(Boolean) || [];
       } catch { /* 自动获取失败，使用手动输入 */ }
     }
@@ -214,24 +267,61 @@ export default function SettingsScreen() {
       return;
     }
     const finalName = apiForm.name.trim() || '未命名 API';
-    const newApis = [...(config.third_party_apis || []), { name: finalName, endpoint: apiForm.endpoint.trim(), apiKey: apiForm.apiKey.trim(), models: merged }];
-    const newConfig = { ...config, third_party_apis: newApis };
-    await api.saveConfig(newConfig);
-    setConfig(newConfig);
+    const apis: any[] = [...(config.third_party_apis || [])];
+    if (isEdit) {
+      // 编辑：保留原对象中未在表单暴露的字段，仅覆盖四项
+      apis[editingIdx as number] = {
+        ...apis[editingIdx as number],
+        name: finalName,
+        endpoint: apiForm.endpoint.trim(),
+        apiKey: finalKey,
+        models: merged,
+      };
+    } else {
+      apis.push({ name: finalName, endpoint: apiForm.endpoint.trim(), apiKey: finalKey, models: merged });
+    }
+    const newConfig = { ...config, third_party_apis: apis };
+    let finalConfig = newConfig;
+    // 编辑后若当前选中的第三方模型已不在新模型列表中，自动回退官方 API，避免引用失效
+    if (isEdit) {
+      const cur = String(newConfig.current_model || '');
+      if (cur.startsWith(`tp:${editingIdx}:`)) {
+        const curModel = cur.split(':').slice(2).join(':');
+        if (!merged.includes(curModel)) finalConfig = { ...newConfig, current_model: 'frapi' };
+      }
+    }
+    await api.saveConfig(finalConfig);
+    setConfig(finalConfig);
     setApiForm({ name: '', endpoint: '', apiKey: '', models: '' });
     setShowKey(false);
     setTestingApi('idle');
     setTestMsg('');
     setTestModels([]);
+    setEditingIdx(null);
     setShowAddApi(false);
-    Alert.alert('Frapi AI', '添加成功，共 ' + merged.length + ' 个模型');
+    Alert.alert('Frapi AI', (isEdit ? '修改成功' : '添加成功') + '，共 ' + merged.length + ' 个模型');
   };
 
+  // 删除第三方 API（二次确认）；若当前对话正在使用它，自动回退官方 API
   const removeApi = (idx: number) => {
-    const newApis = (config.third_party_apis || []).filter((_: any, i: number) => i !== idx);
-    const newConfig = { ...config, third_party_apis: newApis };
-    api.saveConfig(newConfig);
-    setConfig(newConfig);
+    const tp = config.third_party_apis?.[idx];
+    const doRemove = () => {
+      const newApis = (config.third_party_apis || []).filter((_: any, i: number) => i !== idx);
+      let newConfig: any = { ...config, third_party_apis: newApis };
+      if ((newConfig.current_model || '').startsWith(`tp:${idx}:`)) {
+        newConfig = { ...newConfig, current_model: 'frapi' };
+      }
+      api.saveConfig(newConfig);
+      setConfig(newConfig);
+    };
+    if (Platform.OS === 'web') {
+      if (window.confirm(`确定删除第三方 API「${tp?.name || ''}」？`)) doRemove();
+    } else {
+      Alert.alert('删除第三方 API', `确定删除「${tp?.name || '未命名 API'}」吗？删除后不可恢复。`, [
+        { text: '取消', style: 'cancel' },
+        { text: '删除', style: 'destructive', onPress: doRemove },
+      ]);
+    }
   };
 
   return (
@@ -341,7 +431,7 @@ export default function SettingsScreen() {
       <View style={[styles.card, { backgroundColor: C.card, borderColor: C.border, padding: 14 }]}>
         <View style={styles.row}>
           <ThemedText style={styles.sectionTitle}>第三方 API</ThemedText>
-          <TouchableOpacity onPress={() => setShowAddApi(true)}>
+          <TouchableOpacity onPress={openAddApiModal}>
             <ThemedText style={{ color: C.accent, fontWeight: '500' }}>＋ 添加</ThemedText>
           </TouchableOpacity>
         </View>
@@ -358,15 +448,26 @@ export default function SettingsScreen() {
               <View style={{ flex: 1 }}>
                 <ThemedText style={{ fontWeight: '500' }}>{tp.name || '未命名 API'}</ThemedText>
                 <ThemedText style={[styles.hint, { color: C.sub }]} numberOfLines={1}>{tp.endpoint}</ThemedText>
+                {/* API Key 脱敏展示，不泄露完整密钥 */}
+                {!!tp.apiKey && (
+                  <ThemedText style={[styles.hint, { color: C.sub, fontSize: 11 }]} numberOfLines={1}>
+                    🔑 {maskApiKey(tp.apiKey)}
+                  </ThemedText>
+                )}
                 <View style={styles.apiMeta}>
                   <View style={[styles.modelBadge, { backgroundColor: C.accentSoft }]}>
                     <ThemedText style={{ color: C.accent, fontSize: 11 }}>{(tp.models || []).length} 个模型</ThemedText>
                   </View>
                 </View>
               </View>
-              <TouchableOpacity onPress={() => removeApi(idx)} style={[styles.deleteBtn, { borderColor: C.danger }]}>
-                <ThemedText style={{ color: C.danger, fontSize: 12 }}>删除</ThemedText>
-              </TouchableOpacity>
+              <View style={styles.apiActions}>
+                <TouchableOpacity onPress={() => openEditApiModal(idx)} style={[styles.editBtn, { borderColor: C.accent }]}>
+                  <ThemedText style={{ color: C.accent, fontSize: 12 }}>编辑</ThemedText>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => removeApi(idx)} style={[styles.deleteBtn, { borderColor: C.danger }]}>
+                  <ThemedText style={{ color: C.danger, fontSize: 12 }}>删除</ThemedText>
+                </TouchableOpacity>
+              </View>
             </View>
           ))
         )}
@@ -433,19 +534,24 @@ export default function SettingsScreen() {
         </View>
       </Modal>
 
-      {/* 添加第三方 API 弹窗 — 商用级分组卡片 + 图标 + 即时反馈 + 连接测试 */}
-      <Modal visible={showAddApi} animationType="slide" transparent onRequestClose={() => setShowAddApi(false)}>
+      {/* 添加/编辑第三方 API 弹窗 — 商用级分组卡片 + 图标 + 即时反馈 + 连接测试 */}
+      <Modal visible={showAddApi} animationType="slide" transparent onRequestClose={() => { setShowAddApi(false); setEditingIdx(null); }}>
         <View style={[styles.modalMask, { backgroundColor: C.mask }]}>
           <SafeAreaView style={{ flex: 1, justifyContent: 'flex-end' }}>
             <View style={[styles.apiModal, { backgroundColor: C.panel }]}>
               {/* 顶部标题栏 */}
               <View style={styles.apiModalHeader}>
-                <TouchableOpacity onPress={() => setShowAddApi(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <TouchableOpacity
+                  onPress={() => { setShowAddApi(false); setEditingIdx(null); }}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
                   <ThemedText style={{ fontSize: 22, color: C.sub, lineHeight: 24 }}>×</ThemedText>
                 </TouchableOpacity>
                 <View style={{ alignItems: 'center' }}>
-                  <ThemedText style={styles.apiModalTitle}>添加第三方 API</ThemedText>
-                  <ThemedText style={[styles.apiModalSubtitle, { color: C.sub }]}>支持 OpenAI 兼容接口</ThemedText>
+                  <ThemedText style={styles.apiModalTitle}>{editingIdx != null ? '编辑第三方 API' : '添加第三方 API'}</ThemedText>
+                  <ThemedText style={[styles.apiModalSubtitle, { color: C.sub }]}>
+                    {editingIdx != null ? '修改配置 · 密钥留空则保持不变' : '支持 OpenAI 兼容接口'}
+                  </ThemedText>
                 </View>
                 <View style={{ width: 24 }} />
               </View>
@@ -513,12 +619,14 @@ export default function SettingsScreen() {
                     </View>
                   )}
 
-                  {/* API Key 输入 */}
+                  {/* API Key 输入（编辑时不回显明文，留空即保持原密钥） */}
                   <View style={[styles.apiField, { backgroundColor: C.inputBg, borderColor: C.border, marginTop: 10 }]}>
                     <ThemedText style={[styles.apiFieldIcon, { color: C.sub }]}>🔑</ThemedText>
                     <TextInput
                       style={[styles.apiFieldInput, { color: C.cancelText }]}
-                      placeholder="sk-..."
+                      placeholder={editingIdx != null
+                        ? `已配置 ${maskApiKey(config?.third_party_apis?.[editingIdx]?.apiKey || '')}，留空不修改`
+                        : 'sk-...'}
                       placeholderTextColor={C.sub}
                       autoCapitalize="none"
                       autoCorrect={false}
@@ -533,6 +641,13 @@ export default function SettingsScreen() {
                       <ThemedText style={{ fontSize: 16, color: C.sub }}>{showKey ? '🙈' : '👁️'}</ThemedText>
                     </TouchableOpacity>
                   </View>
+                  {editingIdx != null && !apiForm.apiKey && (
+                    <View style={[styles.apiPreviewHint, { backgroundColor: C.accentSoft }]}>
+                      <ThemedText style={{ fontSize: 11, color: C.accent, flex: 1 }}>
+                        🔒 出于隐私保护，密钥不回显；仅在需要更换时输入新密钥
+                      </ThemedText>
+                    </View>
+                  )}
 
                   {/* 测试连接按钮 + 状态指示 */}
                   <TouchableOpacity
@@ -606,6 +721,7 @@ export default function SettingsScreen() {
                   style={[styles.apiFooterBtn, { backgroundColor: C.cancelBg }]}
                   onPress={() => {
                     setShowAddApi(false);
+                    setEditingIdx(null);
                     setTestingApi('idle');
                     setTestMsg('');
                     setTestModels([]);
@@ -618,13 +734,16 @@ export default function SettingsScreen() {
                   style={[
                     styles.apiFooterBtn,
                     { backgroundColor: C.accent, shadowColor: C.accent, shadowOpacity: 0.3, shadowOffset: { width: 0, height: 2 }, shadowRadius: 4, elevation: 3 },
-                    (!apiForm.endpoint.trim() || !apiForm.apiKey.trim()) && { opacity: 0.4 },
+                    // 新增：endpoint + key 都必填；编辑：endpoint 必填（key 留空沿用原值）
+                    (!apiForm.endpoint.trim() || (editingIdx == null && !apiForm.apiKey.trim())) && { opacity: 0.4 },
                   ]}
-                  onPress={handleAddApi}
+                  onPress={handleSaveApi}
                   disabled={busy}
                   activeOpacity={0.7}
                 >
-                  <ThemedText style={{ color: '#FFF', fontWeight: '600' }}>{busy ? '保存中...' : '保存 API'}</ThemedText>
+                  <ThemedText style={{ color: '#FFF', fontWeight: '600' }}>
+                    {busy ? '保存中...' : editingIdx != null ? '保存修改' : '保存 API'}
+                  </ThemedText>
                 </TouchableOpacity>
               </View>
             </View>
@@ -675,6 +794,8 @@ const styles = StyleSheet.create({
   themeOption: { flex: 1, alignItems: 'center', gap: 6, paddingVertical: 14, borderRadius: 12, borderWidth: 1 },
   themeLabel: { fontSize: 12, fontWeight: '500' },
   deleteBtn: { borderWidth: 1, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14 },
+  editBtn: { borderWidth: 1, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14 },
+  apiActions: { flexDirection: 'column', gap: 6, alignItems: 'flex-end' },
   modalMask: { flex: 1, justifyContent: 'center', padding: 24 },
   modal: { borderRadius: 16, padding: 20, gap: 10 },
   modalBtns: { flexDirection: 'row', gap: 10, marginTop: 4 },

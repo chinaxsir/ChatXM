@@ -898,7 +898,8 @@ export default function ChatScreen() {
 
       {/* 历史会话面板 */}
       <Modal visible={showHistory} animationType="slide" transparent onRequestClose={() => { setShowHistory(false); setSearchKw(''); }}>
-        <View style={styles.modalMask}>
+        <TouchableOpacity style={styles.modalMask} onPress={() => { setShowHistory(false); setSearchKw(''); }} activeOpacity={1}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}}>
           <View style={[styles.bottomPanel, { backgroundColor: C.panelBg }]}>
             <View style={styles.panelHeader}>
               <ThemedText type="subtitle">历史会话</ThemedText>
@@ -943,12 +944,14 @@ export default function ChatScreen() {
               );
             })()}
           </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* 模型选择面板 */}
       <Modal visible={showModel} animationType="slide" transparent onRequestClose={() => setShowModel(false)}>
-        <View style={styles.modalMask}>
+        <TouchableOpacity style={styles.modalMask} onPress={() => setShowModel(false)} activeOpacity={1}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}}>
           <View style={[styles.bottomPanel, { backgroundColor: C.panelBg }]}>
             <View style={styles.panelHeader}>
               <ThemedText type="subtitle">选择模型</ThemedText>
@@ -972,12 +975,14 @@ export default function ChatScreen() {
               </TouchableOpacity>
             ))}
           </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* 图片来源选择 ActionSheet：拍照 / 相册 */}
       <Modal visible={showImageSrc} animationType="fade" transparent onRequestClose={() => setShowImageSrc(false)}>
         <TouchableOpacity style={styles.modalMask} onPress={() => setShowImageSrc(false)} activeOpacity={1}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}}>
           <View style={[styles.actionSheet, { backgroundColor: C.panelBg }]}>
             <TouchableOpacity
               style={[styles.actionItem, { borderBottomColor: C.border }]}
@@ -995,12 +1000,14 @@ export default function ChatScreen() {
               <ThemedText style={{ color: C.sub }}>取消</ThemedText>
             </TouchableOpacity>
           </View>
+          </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
 
       {/* 消息操作 ActionSheet */}
       <Modal visible={actionIdx != null} animationType="fade" transparent onRequestClose={closeAction}>
         <TouchableOpacity style={styles.modalMask} onPress={closeAction} activeOpacity={1}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}}>
           <View style={[styles.actionSheet, { backgroundColor: C.panelBg }]}>
             <TouchableOpacity style={[styles.actionItem, { borderBottomColor: C.border }]} onPress={copyMsg}>
               <ThemedText>📋 复制内容</ThemedText>
@@ -1017,6 +1024,7 @@ export default function ChatScreen() {
               <ThemedText style={{ color: C.sub }}>取消</ThemedText>
             </TouchableOpacity>
           </View>
+          </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
     </SafeAreaView>

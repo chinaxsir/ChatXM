@@ -271,16 +271,17 @@ export default function SettingsScreen() {
     const finalName = apiForm.name.trim() || '未命名 API';
     const apis: any[] = [...(config.third_party_apis || [])];
     if (isEdit) {
-      // 编辑：保留原对象中未在表单暴露的字段，仅覆盖四项
+      // 编辑：保留原对象中未在表单暴露的字段，仅覆盖四项（manual_models 供对话页自动同步时保留手动模型）
       apis[editingIdx as number] = {
         ...apis[editingIdx as number],
         name: finalName,
         endpoint: apiForm.endpoint.trim(),
         apiKey: finalKey,
         models: merged,
+        manual_models: manual,
       };
     } else {
-      apis.push({ name: finalName, endpoint: apiForm.endpoint.trim(), apiKey: finalKey, models: merged });
+      apis.push({ name: finalName, endpoint: apiForm.endpoint.trim(), apiKey: finalKey, models: merged, manual_models: manual });
     }
     const newConfig = { ...config, third_party_apis: apis };
     let finalConfig = newConfig;

@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { StyleSheet, View, Text, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, SafeAreaView, Modal, Alert, Image, Pressable, Animated } from 'react-native';
+import { StyleSheet, View, Text, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, SafeAreaView, Modal, Alert, Image, Pressable, Animated, ScrollView } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useThemeMode } from '@/hooks/useThemeMode';
 import * as ImagePicker from 'expo-image-picker';
@@ -34,6 +34,10 @@ export default function ChatScreen() {
   const { scheme } = useThemeMode();
   const C = palettes[scheme === 'dark' ? 'dark' : 'light'];
   const [config, setConfig] = useState<any>(null);
+  // configRef 始终指向最新配置：模型自动同步、余额扣费等异步任务写回时
+  // 以此为基准展开，避免彼此用旧快照覆盖对方刚写入的字段（如 current_model/balance）
+  const configRef = useRef<any>(null);
+  const applyConfig = (next: any) => { configRef.current = next; setConfig(next); };
   const [messages, setMessages] = useState<Msg[]>([]);
   const [sessionId, setSessionId] = useState('default_session');
   const [input, setInput] = useState('');
@@ -134,8 +138,10 @@ export default function ChatScreen() {
       (async () => {
         const c = await api.loadConfig();
         if (!active) return;
-        setConfig(c);
+        applyConfig(c);
         if (c?.current_model) setModel(c.current_model);
+        // 启动时自动同步第三方API模型列表（后台新增/改名智能模型组自动拉取）
+        if (c) refreshThirdPartyModels(c);
         // 恢复上次退出时正在查看的会话，所有历史均保存在本地
         const lastId = await api.loadLastSession();
         if (active && lastId) setSessionId(lastId);
@@ -441,7 +447,7 @@ export default function ChatScreen() {
             },
           };
           await api.saveConfig(newConfig);
-          setConfig(newConfig);
+          applyConfig(newConfig);
 
           // 同步服务端真实余额
           if (config.session_token) {
@@ -451,7 +457,7 @@ export default function ChatScreen() {
               if (realBalance != null) {
                 const synced = { ...newConfig, balance: realBalance };
                 await api.saveConfig(synced);
-                setConfig(synced);
+                applyConfig(synced);
               }
             } catch { /* 同步失败时保留本地估算值 */ }
           }
@@ -625,13 +631,91 @@ export default function ChatScreen() {
     if (config) {
       const updated = { ...config, current_model: m };
       await api.saveConfig(updated);
-      setConfig(updated);
+      applyConfig(updated);
     }
+  };
+
+  // 自动同步模型列表（APP启动时+打开模型面板时触发）
+  // 第三方API：服务端 /v1/models 为权威来源，拉取失败静默降级保留本地快照；手动输入的模型(manual_models)始终保留
+  // 官方智能模型组（池）：拉取 /v1/models 后用探测法自动识别组别名——
+  //   对每个 id 发 max_tokens=1 极小请求，响应 model ≠ 请求 id 即被网关路由过 → 是组别名；
+  //   仅当模型 id 列表发生变化时才重新探测（后台无调整则零探测成本），失败/为空保底 ['frapi']
+  const refreshThirdPartyModels = async (baseConfig: any) => {
+    const apis: any[] = [...(baseConfig?.third_party_apis || [])];
+    let changed = false;
+    // 官方智能模型组自动识别
+    let officialGroups: string[] | null = null;
+    let officialIds: string[] | null = null;
+    const officialKey = baseConfig?.primary_api_key || baseConfig?.api_keys?.[0] || '';
+    if (officialKey) {
+      try {
+        const res = await api.fetchModels(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, officialKey);
+        const ids: string[] = Array.from(new Set(res?.data?.map((m: any) => m.id).filter(Boolean) || []));
+        if (ids.length > 0) {
+          officialIds = ids;
+          const prevIds: string[] = baseConfig?.official_model_ids || [];
+          const prevGroups: string[] = baseConfig?.official_groups?.length ? baseConfig.official_groups : ['frapi'];
+          if (JSON.stringify([...ids].sort()) === JSON.stringify([...prevIds].sort())) {
+            officialGroups = prevGroups; // 列表未变化：复用缓存，零探测成本
+          } else {
+            const results = await Promise.all(ids.map((id) => api.probeGroupAlias(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, officialKey, id)));
+            const groups = ids.filter((_, i) => results[i] != null);
+            // 探测全部失败（网络异常等）时保留缓存，避免清空可用组
+            officialGroups = groups.length > 0 ? groups : prevGroups;
+          }
+          if (JSON.stringify(officialGroups) !== JSON.stringify(prevGroups)) changed = true;
+          if (JSON.stringify(ids) !== JSON.stringify(prevIds)) changed = true;
+        }
+      } catch { /* 静默降级：保留缓存或默认 frapi */ }
+    }
+    if (apis.length > 0) await Promise.all(apis.map(async (tp: any, idx: number) => {
+      if (!tp?.endpoint || !tp?.apiKey) return;
+      try {
+        const res = await api.fetchModels(tp.endpoint, tp.apiKey);
+        const fetched: string[] = res?.data?.map((m: any) => m.id).filter(Boolean) || [];
+        if (fetched.length > 0) {
+          const merged = Array.from(new Set([...fetched, ...(tp.manual_models || [])]));
+          if (JSON.stringify(merged) !== JSON.stringify(tp.models || [])) {
+            apis[idx] = { ...tp, models: merged };
+            changed = true;
+          }
+        }
+      } catch { /* 静默降级：网络异常/临时故障时保留本地快照 */ }
+    }));
+    if (!changed) return;
+    // 以 configRef 最新配置为基准写回：刷新期间用户可能已切换模型/产生扣费，
+    // 用传入的 baseConfig 展开会把那些字段覆盖回旧值
+    const latest = configRef.current || baseConfig;
+    const updated: any = { ...latest, third_party_apis: apis };
+    if (officialGroups != null) {
+      updated.official_groups = officialGroups;
+      if (officialIds != null) updated.official_model_ids = officialIds; // 记录探测基准，列表未变则下次跳过探测
+    }
+    // 当前选中的模型若已被删除/改名，自动回退，避免引用失效
+    const groupsNow: string[] = updated.official_groups?.length ? updated.official_groups : ['frapi'];
+    const cur = String(updated.current_model || '');
+    if (cur.startsWith('tp:')) {
+      const parts = cur.split(':');
+      const idx = Number(parts[1]);
+      const modelName = parts.slice(2).join(':');
+      if (!apis[idx]?.models?.includes(modelName)) {
+        updated.current_model = groupsNow[0] || 'frapi';
+        setModel(groupsNow[0] || 'frapi');
+      }
+    } else if (!groupsNow.includes(cur)) {
+      // 官方组被删除/改名 → 回退第一组
+      updated.current_model = groupsNow[0] || 'frapi';
+      setModel(groupsNow[0] || 'frapi');
+    }
+    applyConfig(updated);
+    await api.saveConfig(updated);
   };
 
   const handleLoginSuccess = async () => {
     const c = await api.loadConfig();
-    setConfig(c);
+    applyConfig(c);
+    // 登录后首次进入：useFocusEffect 不会重新触发（页面未切换），此处主动同步一次模型列表
+    if (c) refreshThirdPartyModels(c);
   };
 
   if (!config) {
@@ -645,7 +729,15 @@ export default function ChatScreen() {
     });
   });
 
-  const currentLabel = model === 'frapi' ? '官方 API' : (thirdPartyModels.find(m => m.value === model)?.label || '官方 API');
+  // 官方智能模型组（池）：来自设置页手动配置（/v1/models 无法区分组名与真实模型），
+  // 网关按组名自动路由到组内模型；默认保底 frapi
+  const officialModels: string[] = (config?.official_groups?.length ? config.official_groups : ['frapi']) as string[];
+  const isOfficialModel = (v: string) => officialModels.includes(v);
+
+  // 顶栏胶囊固定显示「官方」，具体选哪个智能模型组在面板内选择（对用户透明）
+  const currentLabel = isOfficialModel(model)
+    ? '官方'
+    : (thirdPartyModels.find(m => m.value === model)?.label || '官方');
 
   // 是否有可发送内容（文字 / 图片 / 文件）
   const hasContent = !!(input.trim() || image || fileName);
@@ -658,19 +750,19 @@ export default function ChatScreen() {
           <Text style={[styles.iconBtnText, { color: C.btnText }]}>☰</Text>
         </Pressable>
 
-        {/* 模型选择：胶囊，收窄宽度 */}
+        {/* 模型选择：胶囊，收窄宽度（官方组始终可选，无需配置第三方API） */}
         <Pressable
           style={({ pressed }) => [
             styles.modelChip,
-            { backgroundColor: thirdPartyModels.length > 0 ? C.chip : C.btnBg },
-            thirdPartyModels.length > 0 && pressed && { opacity: 0.7, transform: [{ scale: 0.96 }] },
+            { backgroundColor: C.chip },
+            pressed && { opacity: 0.7, transform: [{ scale: 0.96 }] },
           ]}
-          onPress={() => thirdPartyModels.length > 0 ? setShowModel(true) : null}
+          onPress={() => { setShowModel(true); if (config) refreshThirdPartyModels(config); }}
         >
-          <ThemedText style={[styles.modelChipText, { color: thirdPartyModels.length > 0 ? C.accent : C.btnText }]} numberOfLines={1}>
+          <ThemedText style={[styles.modelChipText, { color: C.accent }]} numberOfLines={1}>
             {currentLabel}
           </ThemedText>
-          {thirdPartyModels.length > 0 && <Text style={[styles.chevron, { color: C.accent }]}>▾</Text>}
+          <Text style={[styles.chevron, { color: C.accent }]}>▾</Text>
         </Pressable>
 
         <Pressable style={({ pressed }) => [styles.iconBtn, { backgroundColor: C.accentSoft }, pressed && { opacity: 0.7, transform: [{ scale: 0.92 }] }]} onPress={newChat}>
@@ -957,23 +1049,32 @@ export default function ChatScreen() {
               <ThemedText type="subtitle">选择模型</ThemedText>
               <TouchableOpacity onPress={() => setShowModel(false)}><ThemedText style={{ color: C.sub }}>关闭</ThemedText></TouchableOpacity>
             </View>
-            <TouchableOpacity
-              style={[styles.modelOption, { borderBottomColor: C.border }, model === 'frapi' && { backgroundColor: C.chip }]}
-              onPress={() => changeModel('frapi')}
-            >
-              <ThemedText style={{ fontWeight: model === 'frapi' ? '600' : '400' }}>官方 API</ThemedText>
-              {model === 'frapi' && <ThemedText style={{ color: C.accent }}>✓</ThemedText>}
-            </TouchableOpacity>
-            {thirdPartyModels.map(m => (
-              <TouchableOpacity
-                key={m.value}
-                style={[styles.modelOption, { borderBottomColor: C.border }, model === m.value && { backgroundColor: C.chip }]}
-                onPress={() => changeModel(m.value)}
-              >
-                <ThemedText style={{ fontWeight: model === m.value ? '600' : '400' }}>{m.label}</ThemedText>
-                {model === m.value && <ThemedText style={{ color: C.accent }}>✓</ThemedText>}
-              </TouchableOpacity>
-            ))}
+            <ScrollView style={{ maxHeight: 420 }} nestedScrollEnabled>
+              <ThemedText style={{ color: C.sub, fontSize: 12, paddingVertical: 6 }}>官方</ThemedText>
+              {officialModels.map(m => (
+                <TouchableOpacity
+                  key={`of-${m}`}
+                  style={[styles.modelOption, { borderBottomColor: C.border }, model === m && { backgroundColor: C.chip }]}
+                  onPress={() => changeModel(m)}
+                >
+                  <ThemedText style={{ fontWeight: model === m ? '600' : '400' }}>{m}</ThemedText>
+                  {model === m && <ThemedText style={{ color: C.accent }}>✓</ThemedText>}
+                </TouchableOpacity>
+              ))}
+              {thirdPartyModels.length > 0 && (
+                <ThemedText style={{ color: C.sub, fontSize: 12, paddingVertical: 6 }}>第三方 API</ThemedText>
+              )}
+              {thirdPartyModels.map(m => (
+                <TouchableOpacity
+                  key={m.value}
+                  style={[styles.modelOption, { borderBottomColor: C.border }, model === m.value && { backgroundColor: C.chip }]}
+                  onPress={() => changeModel(m.value)}
+                >
+                  <ThemedText style={{ fontWeight: model === m.value ? '600' : '400' }}>{m.label}</ThemedText>
+                  {model === m.value && <ThemedText style={{ color: C.accent }}>✓</ThemedText>}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
           </View>
           </TouchableOpacity>
         </TouchableOpacity>

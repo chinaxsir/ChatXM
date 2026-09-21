@@ -272,6 +272,36 @@ export const api = {
     }
   },
 
+  // 探测模型 id 是否为智能模型组（池）别名：
+  // 发送 max_tokens=1 的极小请求，若响应 model ≠ 请求 id，说明被网关路由到组内真实模型 → 是组别名
+  // 返回被路由到的实际模型名（非组别名返回 null）
+  async probeGroupAlias(endpoint: string, apiKey: string, modelId: string) {
+    const base = normalizeEndpoint(endpoint);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+    try {
+      const response = await fetch(`${base}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 1,
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!response.ok) return null;
+      const data = await response.json();
+      const actual = data?.model || data?.choices?.[0]?.model || '';
+      return actual && actual !== modelId ? actual : null;
+    } catch {
+      clearTimeout(timer);
+      return null;
+    }
+  },
+
   async sendChatRequest(args: any) {
     const authHeader = args.token ? (args.token.startsWith('Bearer ') ? args.token : `Bearer ${args.token}`) : '';
     const base = normalizeEndpoint(args.endpoint);

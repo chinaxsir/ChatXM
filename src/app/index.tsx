@@ -658,7 +658,14 @@ export default function ChatScreen() {
           if (JSON.stringify([...ids].sort()) === JSON.stringify([...prevIds].sort())) {
             officialGroups = prevGroups; // 列表未变化：复用缓存，零探测成本
           } else {
-            const results = await Promise.all(ids.map((id) => api.probeGroupAlias(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, officialKey, id)));
+            // 分批探测：每批 3 个并发，避免一次性打满触发中转站「并发过高」限流
+            const results: (string | null)[] = new Array(ids.length).fill(null);
+            const BATCH = 3;
+            for (let i = 0; i < ids.length; i += BATCH) {
+              const batch = ids.slice(i, i + BATCH);
+              const batchResults = await Promise.all(batch.map((id) => api.probeGroupAlias(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, officialKey, id)));
+              results.splice(i, batch.length, ...batchResults);
+            }
             const groups = ids.filter((_, i) => results[i] != null);
             // 探测全部失败（网络异常等）时保留缓存，避免清空可用组
             officialGroups = groups.length > 0 ? groups : prevGroups;
@@ -991,7 +998,7 @@ export default function ChatScreen() {
       {/* 历史会话面板 */}
       <Modal visible={showHistory} animationType="slide" transparent onRequestClose={() => { setShowHistory(false); setSearchKw(''); }}>
         <TouchableOpacity style={styles.modalMask} onPress={() => { setShowHistory(false); setSearchKw(''); }} activeOpacity={1}>
-          <TouchableOpacity activeOpacity={1} onPress={() => {}}>
+          <View onStartShouldSetResponder={() => true}>
           <View style={[styles.bottomPanel, { backgroundColor: C.panelBg }]}>
             <View style={styles.panelHeader}>
               <ThemedText type="subtitle">历史会话</ThemedText>
@@ -1036,14 +1043,14 @@ export default function ChatScreen() {
               );
             })()}
           </View>
-          </TouchableOpacity>
+          </View>
         </TouchableOpacity>
       </Modal>
 
       {/* 模型选择面板 */}
       <Modal visible={showModel} animationType="slide" transparent onRequestClose={() => setShowModel(false)}>
         <TouchableOpacity style={styles.modalMask} onPress={() => setShowModel(false)} activeOpacity={1}>
-          <TouchableOpacity activeOpacity={1} onPress={() => {}}>
+          <View onStartShouldSetResponder={() => true}>
           <View style={[styles.bottomPanel, { backgroundColor: C.panelBg }]}>
             <View style={styles.panelHeader}>
               <ThemedText type="subtitle">选择模型</ThemedText>
@@ -1076,14 +1083,14 @@ export default function ChatScreen() {
               ))}
             </ScrollView>
           </View>
-          </TouchableOpacity>
+          </View>
         </TouchableOpacity>
       </Modal>
 
       {/* 图片来源选择 ActionSheet：拍照 / 相册 */}
       <Modal visible={showImageSrc} animationType="fade" transparent onRequestClose={() => setShowImageSrc(false)}>
         <TouchableOpacity style={styles.modalMask} onPress={() => setShowImageSrc(false)} activeOpacity={1}>
-          <TouchableOpacity activeOpacity={1} onPress={() => {}}>
+          <View onStartShouldSetResponder={() => true}>
           <View style={[styles.actionSheet, { backgroundColor: C.panelBg }]}>
             <TouchableOpacity
               style={[styles.actionItem, { borderBottomColor: C.border }]}
@@ -1101,14 +1108,14 @@ export default function ChatScreen() {
               <ThemedText style={{ color: C.sub }}>取消</ThemedText>
             </TouchableOpacity>
           </View>
-          </TouchableOpacity>
+          </View>
         </TouchableOpacity>
       </Modal>
 
       {/* 消息操作 ActionSheet */}
       <Modal visible={actionIdx != null} animationType="fade" transparent onRequestClose={closeAction}>
         <TouchableOpacity style={styles.modalMask} onPress={closeAction} activeOpacity={1}>
-          <TouchableOpacity activeOpacity={1} onPress={() => {}}>
+          <View onStartShouldSetResponder={() => true}>
           <View style={[styles.actionSheet, { backgroundColor: C.panelBg }]}>
             <TouchableOpacity style={[styles.actionItem, { borderBottomColor: C.border }]} onPress={copyMsg}>
               <ThemedText>📋 复制内容</ThemedText>
@@ -1125,7 +1132,7 @@ export default function ChatScreen() {
               <ThemedText style={{ color: C.sub }}>取消</ThemedText>
             </TouchableOpacity>
           </View>
-          </TouchableOpacity>
+          </View>
         </TouchableOpacity>
       </Modal>
     </SafeAreaView>

@@ -38,9 +38,6 @@ export default function ChatScreen() {
   // 以此为基准展开，避免彼此用旧快照覆盖对方刚写入的字段（如 current_model/balance）
   const configRef = useRef<any>(null);
   const applyConfig = (next: any) => { configRef.current = next; setConfig(next); };
-  // 智能模型组串行探测状态：探测进行中用户发消息需立即中止（避免与对话请求叠加触发网关并发限流）
-  const probeAbortRef = useRef<AbortController | null>(null);
-  const [syncingGroups, setSyncingGroups] = useState(false);
   // 用量统计独立于账号存储：登录/启动时把本地累计统计水合回 config 供设置页展示
   const hydrateUsage = async (c: any) => {
     if (!c) return c;
@@ -353,8 +350,6 @@ export default function ChatScreen() {
     const textToSend = typeof overrideText === 'string' ? overrideText : input;
     if (!textToSend.trim() && !image && !fileName) return;
     if (!config) return;
-    // 互斥：模型组探测进行中立即中止，避免对话请求与探测请求叠加触发网关并发限流
-    probeAbortRef.current?.abort();
 
     // 余额检查：新注册用户有 $1 额度，余额耗尽则拦截
     const balance = Number(config.balance ?? 0);
@@ -657,58 +652,27 @@ export default function ChatScreen() {
 
   // 自动同步模型列表（APP启动时+打开模型面板时触发）
   // 第三方API：服务端 /v1/models 为权威来源，拉取失败静默降级保留本地快照；手动输入的模型(manual_models)始终保留
-  // 官方智能模型组（池）：组别名命名无规律、/v1/models 不区分组与真实模型，唯一可靠判据是探测路由行为——
-  //   对每个 id 发 max_tokens=1 极小请求，响应 model ≠ 请求 id 即被网关路由过 → 是组别名。
-  //   探测必须串行（并发=1，避免触发网关「并发过高」限流）；列表未变化时复用缓存零探测；
-  //   用户发消息时立即中止探测（sendMessage 中处理），探测中面板显示「同步中…」
+  // 官方智能模型组（池）：站长命名规则=池名与模型系同名（gemini池→gemini-3.1-flash…、glm池→glm-5.1…），
+  //   因此 /v1/models 中「是其他 id 的 '-' 前缀的 id」即池名（gemini、glm…），纯本地识别零探测请求；
+  //   frapi 默认池保底；识别结果为空时保留上次缓存
   const refreshThirdPartyModels = async (baseConfig: any) => {
     const apis: any[] = [...(baseConfig?.third_party_apis || [])];
     let changed = false;
     // 官方智能模型组自动识别
     let officialGroups: string[] | null = null;
-    let officialIds: string[] | null = null;
-    // 用户全部 API keys：不论几个，逐个拉取模型列表取并集，确保覆盖每个 key 对应的智能模型池
-    const allKeys = Array.from(new Set([baseConfig?.primary_api_key, ...(baseConfig?.api_keys || [])].filter(Boolean) as string[]));
-    const officialKey = allKeys[0] || '';
+    const officialKey = baseConfig?.primary_api_key || baseConfig?.api_keys?.[0] || '';
     if (officialKey) {
       try {
-        const idSet = new Set<string>();
-        for (const k of allKeys) {
-          try {
-            const r = await api.fetchModels(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, k);
-            (r?.data?.map((m: any) => m.id).filter(Boolean) || []).forEach((id: string) => idSet.add(id));
-          } catch { /* 单个 key 拉取失败不影响其余 key */ }
-        }
-        const ids: string[] = Array.from(idSet);
+        const res = await api.fetchModels(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, officialKey);
+        const ids: string[] = Array.from(new Set(res?.data?.map((m: any) => m.id).filter(Boolean) || []));
         if (ids.length > 0) {
-          const prevIds: string[] = baseConfig?.official_model_ids || [];
+          // 前缀识别：id 后面跟着 '-' 且存在以它为前缀的模型 id → 是池名
+          const poolNames = ids.filter((id) => ids.some((o) => o !== id && o.startsWith(id + '-')));
+          // frapi 为默认池保底；去重
+          const groups = Array.from(new Set(['frapi', ...poolNames]));
           const prevGroups: string[] = baseConfig?.official_groups?.length ? baseConfig.official_groups : ['frapi'];
-          if (JSON.stringify([...ids].sort()) === JSON.stringify([...prevIds].sort())) {
-            officialGroups = prevGroups; // 列表未变化：复用缓存，零探测成本
-            officialIds = ids;
-          } else {
-            // 串行探测：一次一个请求，绝不并发；探测期间被中止则放弃本次写回（下次打开面板重试）
-            const ac = new AbortController();
-            probeAbortRef.current = ac;
-            setSyncingGroups(true);
-            try {
-              const routed: string[] = [];
-              for (const id of ids) {
-                if (ac.signal.aborted) break;
-                const actual = await api.probeGroupAlias(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, officialKey, id, ac.signal);
-                if (actual) routed.push(id);
-              }
-              if (!ac.signal.aborted && routed.length > 0) {
-                officialGroups = routed;
-                officialIds = ids;
-              }
-            } finally {
-              probeAbortRef.current = null;
-              setSyncingGroups(false);
-            }
-          }
-          if (officialGroups != null && JSON.stringify(officialGroups) !== JSON.stringify(prevGroups)) changed = true;
-          if (officialIds != null && JSON.stringify(ids) !== JSON.stringify(prevIds)) changed = true;
+          officialGroups = groups.length > 0 ? groups : prevGroups;
+          if (JSON.stringify(officialGroups) !== JSON.stringify(prevGroups)) changed = true;
         }
       } catch { /* 静默降级：保留缓存或默认 frapi */ }
     }
@@ -733,7 +697,6 @@ export default function ChatScreen() {
     const updated: any = { ...latest, third_party_apis: apis };
     if (officialGroups != null) {
       updated.official_groups = officialGroups;
-      if (officialIds != null) updated.official_model_ids = officialIds; // 记录探测基准，列表未变则下次跳过探测
     }
     // 当前选中的模型若已被删除/改名，自动回退，避免引用失效
     const groupsNow: string[] = updated.official_groups?.length ? updated.official_groups : ['frapi'];
@@ -1094,9 +1057,7 @@ export default function ChatScreen() {
               <TouchableOpacity onPress={() => setShowModel(false)}><ThemedText style={{ color: C.sub }}>关闭</ThemedText></TouchableOpacity>
             </View>
             <ScrollView style={{ maxHeight: 420 }} nestedScrollEnabled>
-              <ThemedText style={{ color: C.sub, fontSize: 12, paddingVertical: 6 }}>
-                官方{syncingGroups ? ' · 同步中…' : ''}
-              </ThemedText>
+              <ThemedText style={{ color: C.sub, fontSize: 12, paddingVertical: 6 }}>官方</ThemedText>
               {officialModels.map(m => (
                 <TouchableOpacity
                   key={`of-${m}`}

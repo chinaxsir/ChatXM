@@ -73,7 +73,13 @@ export default function SettingsScreen() {
     useCallback(() => {
       let active = true;
       (async () => {
-        const c = await api.loadConfig();
+        const c0 = await api.loadConfig();
+        // 用量统计独立存储，水合回 config 展示（退出/切换账号不归零）
+        const stats = await api.loadUsageStats();
+        const c = stats && c0 ? { ...c0, usage: stats } : c0;
+        if (stats && c0 && JSON.stringify(c0.usage) !== JSON.stringify(stats)) {
+          await api.saveConfig(c);
+        }
         if (!active) return;
         setConfig(c);
         if (c?.session_token) {

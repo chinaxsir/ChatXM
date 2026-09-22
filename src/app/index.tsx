@@ -38,6 +38,17 @@ export default function ChatScreen() {
   // 以此为基准展开，避免彼此用旧快照覆盖对方刚写入的字段（如 current_model/balance）
   const configRef = useRef<any>(null);
   const applyConfig = (next: any) => { configRef.current = next; setConfig(next); };
+  // 用量统计独立于账号存储：登录/启动时把本地累计统计水合回 config 供设置页展示
+  const hydrateUsage = async (c: any) => {
+    if (!c) return c;
+    const stats = await api.loadUsageStats();
+    if (stats) {
+      const merged = { ...c, usage: stats };
+      await api.saveConfig(merged);
+      return merged;
+    }
+    return c;
+  };
   const [messages, setMessages] = useState<Msg[]>([]);
   const [sessionId, setSessionId] = useState('default_session');
   const [input, setInput] = useState('');
@@ -136,7 +147,8 @@ export default function ChatScreen() {
     useCallback(() => {
       let active = true;
       (async () => {
-        const c = await api.loadConfig();
+        const c0 = await api.loadConfig();
+        const c = await hydrateUsage(c0);
         if (!active) return;
         applyConfig(c);
         if (c?.current_model) setModel(c.current_model);
@@ -428,31 +440,34 @@ export default function ChatScreen() {
           finalMessages[finalMessages.length - 1] = { role: 'assistant', content: aiTextRef.current };
           await api.saveHistory(sessionId, finalMessages);
 
-          // 累计消耗统计 + 本地估算扣费
+          // 累计消耗统计 + 本地估算扣费（统计独立持久化，退出/切换账号不归零）
           const day = new Date().toISOString().slice(0, 10);
-          const u = config.usage || { total: 0, prompt: 0, completion: 0, count: 0, daily: {} as any };
+          const curCfg = configRef.current || config;
+          const u = (await api.loadUsageStats()) || { total: 0, prompt: 0, completion: 0, count: 0, daily: {} as any };
           const d = u.daily[day] || { tokens: 0, count: 0 };
           // 估算扣费金额（按综合 $2 / 1M tokens 估算，仅本地即时反馈，最终以服务端为准）
           const estimatedCost = total * 0.000002;
-          const newBalance = config.balance != null ? Math.max(0, Number(config.balance) - estimatedCost) : config.balance;
+          const newBalance = curCfg.balance != null ? Math.max(0, Number(curCfg.balance) - estimatedCost) : curCfg.balance;
+          const newUsage = {
+            total: (u.total || 0) + total,
+            prompt: (u.prompt || 0) + (usage?.prompt_tokens || 0),
+            completion: (u.completion || 0) + (usage?.completion_tokens || 0),
+            count: (u.count || 0) + 1,
+            daily: { ...u.daily, [day]: { tokens: d.tokens + total, count: d.count + 1 } },
+          };
+          await api.saveUsageStats(newUsage);
           const newConfig = {
-            ...config,
+            ...curCfg,
             balance: newBalance,
-            usage: {
-              total: (u.total || 0) + total,
-              prompt: (u.prompt || 0) + (usage?.prompt_tokens || 0),
-              completion: (u.completion || 0) + (usage?.completion_tokens || 0),
-              count: (u.count || 0) + 1,
-              daily: { ...u.daily, [day]: { tokens: d.tokens + total, count: d.count + 1 } },
-            },
+            usage: newUsage,
           };
           await api.saveConfig(newConfig);
           applyConfig(newConfig);
 
           // 同步服务端真实余额
-          if (config.session_token) {
+          if (curCfg.session_token) {
             try {
-              const r = await api.refreshAccount(config.session_token);
+              const r = await api.refreshAccount(curCfg.session_token);
               const realBalance = r?.data?.balance ?? r?.balance ?? r?.data?.user?.balance;
               if (realBalance != null) {
                 const synced = { ...newConfig, balance: realBalance };
@@ -719,7 +734,8 @@ export default function ChatScreen() {
   };
 
   const handleLoginSuccess = async () => {
-    const c = await api.loadConfig();
+    const c0 = await api.loadConfig();
+    const c = await hydrateUsage(c0);
     applyConfig(c);
     // 登录后首次进入：useFocusEffect 不会重新触发（页面未切换），此处主动同步一次模型列表
     if (c) refreshThirdPartyModels(c);
@@ -997,8 +1013,8 @@ export default function ChatScreen() {
 
       {/* 历史会话面板 */}
       <Modal visible={showHistory} animationType="slide" transparent onRequestClose={() => { setShowHistory(false); setSearchKw(''); }}>
-        <TouchableOpacity style={styles.modalMask} onPress={() => { setShowHistory(false); setSearchKw(''); }} activeOpacity={1}>
-          <View onStartShouldSetResponder={() => true}>
+        <View style={styles.modalMask}>
+          <Pressable style={{ flex: 1 }} onPress={() => { setShowHistory(false); setSearchKw(''); }} />
           <View style={[styles.bottomPanel, { backgroundColor: C.panelBg }]}>
             <View style={styles.panelHeader}>
               <ThemedText type="subtitle">历史会话</ThemedText>
@@ -1043,14 +1059,13 @@ export default function ChatScreen() {
               );
             })()}
           </View>
-          </View>
-        </TouchableOpacity>
+        </View>
       </Modal>
 
       {/* 模型选择面板 */}
       <Modal visible={showModel} animationType="slide" transparent onRequestClose={() => setShowModel(false)}>
-        <TouchableOpacity style={styles.modalMask} onPress={() => setShowModel(false)} activeOpacity={1}>
-          <View onStartShouldSetResponder={() => true}>
+        <View style={styles.modalMask}>
+          <Pressable style={{ flex: 1 }} onPress={() => setShowModel(false)} />
           <View style={[styles.bottomPanel, { backgroundColor: C.panelBg }]}>
             <View style={styles.panelHeader}>
               <ThemedText type="subtitle">选择模型</ThemedText>
@@ -1083,14 +1098,13 @@ export default function ChatScreen() {
               ))}
             </ScrollView>
           </View>
-          </View>
-        </TouchableOpacity>
+        </View>
       </Modal>
 
       {/* 图片来源选择 ActionSheet：拍照 / 相册 */}
       <Modal visible={showImageSrc} animationType="fade" transparent onRequestClose={() => setShowImageSrc(false)}>
-        <TouchableOpacity style={styles.modalMask} onPress={() => setShowImageSrc(false)} activeOpacity={1}>
-          <View onStartShouldSetResponder={() => true}>
+        <View style={styles.modalMask}>
+          <Pressable style={{ flex: 1 }} onPress={() => setShowImageSrc(false)} />
           <View style={[styles.actionSheet, { backgroundColor: C.panelBg }]}>
             <TouchableOpacity
               style={[styles.actionItem, { borderBottomColor: C.border }]}
@@ -1108,14 +1122,13 @@ export default function ChatScreen() {
               <ThemedText style={{ color: C.sub }}>取消</ThemedText>
             </TouchableOpacity>
           </View>
-          </View>
-        </TouchableOpacity>
+        </View>
       </Modal>
 
       {/* 消息操作 ActionSheet */}
       <Modal visible={actionIdx != null} animationType="fade" transparent onRequestClose={closeAction}>
-        <TouchableOpacity style={styles.modalMask} onPress={closeAction} activeOpacity={1}>
-          <View onStartShouldSetResponder={() => true}>
+        <View style={styles.modalMask}>
+          <Pressable style={{ flex: 1 }} onPress={closeAction} />
           <View style={[styles.actionSheet, { backgroundColor: C.panelBg }]}>
             <TouchableOpacity style={[styles.actionItem, { borderBottomColor: C.border }]} onPress={copyMsg}>
               <ThemedText>📋 复制内容</ThemedText>
@@ -1132,8 +1145,7 @@ export default function ChatScreen() {
               <ThemedText style={{ color: C.sub }}>取消</ThemedText>
             </TouchableOpacity>
           </View>
-          </View>
-        </TouchableOpacity>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -1184,7 +1196,7 @@ const styles = StyleSheet.create({
   modalMask: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   actionSheet: { borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 8 },
   actionItem: { padding: 16, borderBottomWidth: StyleSheet.hairlineWidth, alignItems: 'center' },
-  bottomPanel: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, maxHeight: '70%' },
+  bottomPanel: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, paddingBottom: 28, maxHeight: '70%' },
   panelHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   searchInput: { borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 10, fontSize: 14 },
   sessionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, gap: 8 },

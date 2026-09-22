@@ -254,6 +254,20 @@ export const api = {
     await AsyncStorage.removeItem('agent_config');
   },
 
+  // 用量统计独立存储：与账号配置解耦，退出登录/切换账号均不归零
+  async loadUsageStats() {
+    try {
+      const raw = await AsyncStorage.getItem('local_usage_stats');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  },
+
+  async saveUsageStats(stats: any) {
+    await AsyncStorage.setItem('local_usage_stats', JSON.stringify(stats));
+  },
+
   async fetchModels(endpoint: string, apiKey: string) {
     const base = normalizeEndpoint(endpoint);
     const controller = new AbortController();

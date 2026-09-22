@@ -659,23 +659,23 @@ export default function ChatScreen() {
     const apis: any[] = [...(baseConfig?.third_party_apis || [])];
     let changed = false;
     // 官方智能模型组自动识别
-    let officialGroups: string[] | null = null;
+    let fetchedIds: string[] | null = null; // 权威：/v1/models 完整 id 列表
     const officialKey = baseConfig?.primary_api_key || baseConfig?.api_keys?.[0] || '';
     if (officialKey) {
       try {
         const res = await api.fetchModels(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, officialKey);
         const ids: string[] = Array.from(new Set(res?.data?.map((m: any) => m.id).filter(Boolean) || []));
         if (ids.length > 0) {
-          // 前缀识别：存在以「该 id + '-'」开头的其他模型 id → 该 id 是池名
+          fetchedIds = ids;
+          // 前缀识别（仅用于判断是否有变化）：存在以「该 id + '-'」开头的其他模型 id → 该 id 是池名
           const poolNames = ids.filter((id) => ids.some((o) => o !== id && o.startsWith(id + '-')));
+          const prevIds: string[] = baseConfig?.official_model_ids || [];
+          if (JSON.stringify(ids) !== JSON.stringify(prevIds)) changed = true;
+          // 后台暴露池别名且变化时，同步更新 official_groups；渲染端优先从 official_model_ids 实时计算
           const prevGroups: string[] = baseConfig?.official_groups?.length ? baseConfig.official_groups : [];
-          // 同步原则：以服务端权威列表为准，不硬编码任何保底
-          // poolNames 非空 → 用新列表（后台有调整）
-          // poolNames 为空 → 保留上次缓存（后台暂未暴露池别名，等下次列表有变化再识别）
-          officialGroups = poolNames.length > 0 ? poolNames : (prevGroups.length > 0 ? prevGroups : ['frapi']);
-          if (JSON.stringify(officialGroups) !== JSON.stringify(prevGroups)) changed = true;
+          if (JSON.stringify(poolNames) !== JSON.stringify(prevGroups)) changed = true;
         }
-      } catch { /* 静默降级：保留缓存或默认 frapi */ }
+      } catch { /* 静默降级：保留缓存 */ }
     }
     if (apis.length > 0) await Promise.all(apis.map(async (tp: any, idx: number) => {
       if (!tp?.endpoint || !tp?.apiKey) return;
@@ -691,16 +691,22 @@ export default function ChatScreen() {
         }
       } catch { /* 静默降级：网络异常/临时故障时保留本地快照 */ }
     }));
-    if (!changed) return;
+    // fetchedIds 是从 /v1/models 拿到的权威完整列表（官方端），有新数据必须写回作为渲染端的数据源
+    // changed 同时覆盖第三方 API 变化和 fetchedIds 变化
+    if (!changed && !fetchedIds) return;
     // 以 configRef 最新配置为基准写回：刷新期间用户可能已切换模型/产生扣费，
     // 用传入的 baseConfig 展开会把那些字段覆盖回旧值
     const latest = configRef.current || baseConfig;
     const updated: any = { ...latest, third_party_apis: apis };
-    if (officialGroups != null) {
-      updated.official_groups = officialGroups;
+    if (fetchedIds) {
+      updated.official_model_ids = fetchedIds;
     }
+    // 渲染端实时从 official_model_ids 过滤出池名，official_groups 仅作兼容/回退
     // 当前选中的模型若已被删除/改名，自动回退，避免引用失效
-    const groupsNow: string[] = updated.official_groups?.length ? updated.official_groups : ['frapi'];
+    // 渲染前实时过滤：从完整 ids 中用前缀识别得到池名列表
+    const curIds: string[] = updated.official_model_ids?.length ? updated.official_model_ids : [];
+    const curPoolNames = curIds.filter((id) => curIds.some((o) => o !== id && o.startsWith(id + '-')));
+    const groupsNow: string[] = curPoolNames.length > 0 ? curPoolNames : (updated.official_groups?.length ? updated.official_groups : ['frapi']);
     const cur = String(updated.current_model || '');
     if (cur.startsWith('tp:')) {
       const parts = cur.split(':');
@@ -738,8 +744,12 @@ export default function ChatScreen() {
     });
   });
 
-  // 官方智能模型组（池）：/v1/models 中识别出的池名（前缀匹配规则），完全以服务端为准
-  const officialModels: string[] = (config?.official_groups?.length ? config.official_groups : ['frapi']) as string[];
+  // 官方智能模型组（池）：渲染端从 /v1/models 完整列表实时前缀过滤，不依赖缓存
+  // 权威数据源 = config.official_model_ids（refreshThirdPartyModels fetch 后保存）
+  const _allIds: string[] = config?.official_model_ids?.length ? config.official_model_ids : [];
+  const officialModels: string[] = _allIds.length > 0
+    ? _allIds.filter((id) => _allIds.some((o) => o !== id && o.startsWith(id + '-'))) // 实时前缀识别
+    : (config?.official_groups?.length ? config.official_groups : ['frapi']); // 回退：老版本缓存
   const isOfficialModel = (v: string) => officialModels.includes(v);
 
   // 顶栏胶囊固定显示「官方」，具体选哪个智能模型组在面板内选择（对用户透明）

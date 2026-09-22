@@ -652,9 +652,9 @@ export default function ChatScreen() {
 
   // 自动同步模型列表（APP启动时+打开模型面板时触发）
   // 第三方API：服务端 /v1/models 为权威来源，拉取失败静默降级保留本地快照；手动输入的模型(manual_models)始终保留
-  // 官方智能模型组（池）：拉取 /v1/models 后用探测法自动识别组别名——
-  //   对每个 id 发 max_tokens=1 极小请求，响应 model ≠ 请求 id 即被网关路由过 → 是组别名；
-  //   仅当模型 id 列表发生变化时才重新探测（后台无调整则零探测成本），失败/为空保底 ['frapi']
+  // 官方智能模型组（池）：拉取 /v1/models 后按命名特征识别组别名——
+  //   组别名是纯字母（frapi/glm），真实模型必带版本号或连字符（glm-5、gemini-3.8-flash）。
+  //   纯本地判断，不发探测请求（此前的探测请求会触发网关「并发过高」限流并挤占对话请求）
   const refreshThirdPartyModels = async (baseConfig: any) => {
     const apis: any[] = [...(baseConfig?.third_party_apis || [])];
     let changed = false;
@@ -670,21 +670,9 @@ export default function ChatScreen() {
           officialIds = ids;
           const prevIds: string[] = baseConfig?.official_model_ids || [];
           const prevGroups: string[] = baseConfig?.official_groups?.length ? baseConfig.official_groups : ['frapi'];
-          if (JSON.stringify([...ids].sort()) === JSON.stringify([...prevIds].sort())) {
-            officialGroups = prevGroups; // 列表未变化：复用缓存，零探测成本
-          } else {
-            // 分批探测：每批 3 个并发，避免一次性打满触发中转站「并发过高」限流
-            const results: (string | null)[] = new Array(ids.length).fill(null);
-            const BATCH = 3;
-            for (let i = 0; i < ids.length; i += BATCH) {
-              const batch = ids.slice(i, i + BATCH);
-              const batchResults = await Promise.all(batch.map((id) => api.probeGroupAlias(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, officialKey, id)));
-              results.splice(i, batch.length, ...batchResults);
-            }
-            const groups = ids.filter((_, i) => results[i] != null);
-            // 探测全部失败（网络异常等）时保留缓存，避免清空可用组
-            officialGroups = groups.length > 0 ? groups : prevGroups;
-          }
+          // 组别名识别：纯字母 id（不含数字/连字符）视为智能模型组，其余为底层真实模型
+          const groups = ids.filter((id) => /^[A-Za-z]+$/.test(id));
+          officialGroups = groups.length > 0 ? groups : prevGroups;
           if (JSON.stringify(officialGroups) !== JSON.stringify(prevGroups)) changed = true;
           if (JSON.stringify(ids) !== JSON.stringify(prevIds)) changed = true;
         }

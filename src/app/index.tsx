@@ -666,12 +666,13 @@ export default function ChatScreen() {
         const res = await api.fetchModels(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, officialKey);
         const ids: string[] = Array.from(new Set(res?.data?.map((m: any) => m.id).filter(Boolean) || []));
         if (ids.length > 0) {
-          // 前缀识别：id 后面跟着 '-' 且存在以它为前缀的模型 id → 是池名
+          // 前缀识别：存在以「该 id + '-'」开头的其他模型 id → 该 id 是池名
           const poolNames = ids.filter((id) => ids.some((o) => o !== id && o.startsWith(id + '-')));
-          // frapi 为默认池保底；去重
-          const groups = Array.from(new Set(['frapi', ...poolNames]));
-          const prevGroups: string[] = baseConfig?.official_groups?.length ? baseConfig.official_groups : ['frapi'];
-          officialGroups = groups.length > 0 ? groups : prevGroups;
+          const prevGroups: string[] = baseConfig?.official_groups?.length ? baseConfig.official_groups : [];
+          // 同步原则：以服务端权威列表为准，不硬编码任何保底
+          // poolNames 非空 → 用新列表（后台有调整）
+          // poolNames 为空 → 保留上次缓存（后台暂未暴露池别名，等下次列表有变化再识别）
+          officialGroups = poolNames.length > 0 ? poolNames : (prevGroups.length > 0 ? prevGroups : ['frapi']);
           if (JSON.stringify(officialGroups) !== JSON.stringify(prevGroups)) changed = true;
         }
       } catch { /* 静默降级：保留缓存或默认 frapi */ }
@@ -737,8 +738,7 @@ export default function ChatScreen() {
     });
   });
 
-  // 官方智能模型组（池）：来自设置页手动配置（/v1/models 无法区分组名与真实模型），
-  // 网关按组名自动路由到组内模型；默认保底 frapi
+  // 官方智能模型组（池）：/v1/models 中识别出的池名（前缀匹配规则），完全以服务端为准
   const officialModels: string[] = (config?.official_groups?.length ? config.official_groups : ['frapi']) as string[];
   const isOfficialModel = (v: string) => officialModels.includes(v);
 

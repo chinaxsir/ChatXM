@@ -667,11 +667,19 @@ export default function ChatScreen() {
     // 官方智能模型组自动识别
     let officialGroups: string[] | null = null;
     let officialIds: string[] | null = null;
-    const officialKey = baseConfig?.primary_api_key || baseConfig?.api_keys?.[0] || '';
+    // 用户全部 API keys：不论几个，逐个拉取模型列表取并集，确保覆盖每个 key 对应的智能模型池
+    const allKeys = Array.from(new Set([baseConfig?.primary_api_key, ...(baseConfig?.api_keys || [])].filter(Boolean) as string[]));
+    const officialKey = allKeys[0] || '';
     if (officialKey) {
       try {
-        const res = await api.fetchModels(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, officialKey);
-        const ids: string[] = Array.from(new Set(res?.data?.map((m: any) => m.id).filter(Boolean) || []));
+        const idSet = new Set<string>();
+        for (const k of allKeys) {
+          try {
+            const r = await api.fetchModels(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, k);
+            (r?.data?.map((m: any) => m.id).filter(Boolean) || []).forEach((id: string) => idSet.add(id));
+          } catch { /* 单个 key 拉取失败不影响其余 key */ }
+        }
+        const ids: string[] = Array.from(idSet);
         if (ids.length > 0) {
           const prevIds: string[] = baseConfig?.official_model_ids || [];
           const prevGroups: string[] = baseConfig?.official_groups?.length ? baseConfig.official_groups : ['frapi'];

@@ -667,8 +667,10 @@ export default function ChatScreen() {
         const ids: string[] = Array.from(new Set(res?.data?.map((m: any) => m.id).filter(Boolean) || []));
         if (ids.length > 0) {
           fetchedIds = ids;
-          // 前缀识别（仅用于判断是否有变化）：存在以「该 id + '-'」开头的其他模型 id → 该 id 是池名
-          const poolNames = ids.filter((id) => ids.some((o) => o !== id && o.startsWith(id + '-')));
+          // 池名精准识别规则：存在其他 id = 该 id + '-' + 数字（版本号）开头
+          // 只有真正的池别名才能派生出带版本号的真实模型（gemini-3.5-flash、glm-4.5…）
+          // gemini-3.5-flash-lite、glm-5.3-flash 等变体是「真实模型的变体」，不构成新池
+          const poolNames = ids.filter((id) => ids.some((o) => o !== id && new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d`).test(o)));
           const prevIds: string[] = baseConfig?.official_model_ids || [];
           if (JSON.stringify(ids) !== JSON.stringify(prevIds)) changed = true;
           // 后台暴露池别名且变化时，同步更新 official_groups；渲染端优先从 official_model_ids 实时计算
@@ -703,9 +705,9 @@ export default function ChatScreen() {
     }
     // 渲染端实时从 official_model_ids 过滤出池名，official_groups 仅作兼容/回退
     // 当前选中的模型若已被删除/改名，自动回退，避免引用失效
-    // 渲染前实时过滤：从完整 ids 中用前缀识别得到池名列表
+    // 渲染前实时过滤：从完整 ids 中识别池名（id 后接 '-' + 数字版本号）
     const curIds: string[] = updated.official_model_ids?.length ? updated.official_model_ids : [];
-    const curPoolNames = curIds.filter((id) => curIds.some((o) => o !== id && o.startsWith(id + '-')));
+    const curPoolNames = curIds.filter((id) => curIds.some((o) => o !== id && new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d`).test(o)));
     const groupsNow: string[] = curPoolNames.length > 0 ? curPoolNames : (updated.official_groups?.length ? updated.official_groups : ['frapi']);
     const cur = String(updated.current_model || '');
     if (cur.startsWith('tp:')) {
@@ -744,12 +746,13 @@ export default function ChatScreen() {
     });
   });
 
-  // 官方智能模型组（池）：渲染端从 /v1/models 完整列表实时前缀过滤，不依赖缓存
-  // 权威数据源 = config.official_model_ids（refreshThirdPartyModels fetch 后保存）
+  // 官方智能模型组（池）：渲染端从 /v1/models 完整列表实时过滤，不依赖缓存
+  // 规则：存在其他 id = 该 id + '-' + 数字（版本号）开头 → 池名（gemini、glm…）
   const _allIds: string[] = config?.official_model_ids?.length ? config.official_model_ids : [];
+  const _escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const officialModels: string[] = _allIds.length > 0
-    ? _allIds.filter((id) => _allIds.some((o) => o !== id && o.startsWith(id + '-'))) // 实时前缀识别
-    : (config?.official_groups?.length ? config.official_groups : ['frapi']); // 回退：老版本缓存
+    ? _allIds.filter((id) => _allIds.some((o) => o !== id && new RegExp(`^${_escapeRegExp(id)}-\\d`).test(o)))
+    : (config?.official_groups?.length ? config.official_groups : ['frapi']);
   const isOfficialModel = (v: string) => officialModels.includes(v);
 
   // 顶栏胶囊固定显示「官方」，具体选哪个智能模型组在面板内选择（对用户透明）

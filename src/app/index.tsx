@@ -17,6 +17,37 @@ import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-spe
 
 const BUILTIN_ENDPOINT = 'https://api.frapi.kdns.fr';
 
+// 压缩图片为 data URL：逐步降级确保 base64 体积安全
+// 防止 iOS fetch 处理超大请求体时崩溃（Bad file descriptor at ExpoModulesCore/Promise.swift:56）
+// 目标：最终 base64 长度 ≤ ~1.2MB（约 900KB 图片数据）
+async function compressImageToDataUrl(uri: string): Promise<string> {
+  const MAX_B64_LEN = 1.2 * 1024 * 1024;
+  let width = 768;
+  let compress = 0.5;
+  for (let i = 0; i < 4; i++) {
+    try {
+      const rendered = await ImageManipulator.manipulate(uri).resize({ width }).renderAsync();
+      const saved = await rendered.saveAsync({ compress, format: SaveFormat.JPEG, base64: true });
+      const b64 = saved.base64 || '';
+      if (b64.length && b64.length <= MAX_B64_LEN) {
+        return `data:image/jpeg;base64,${b64}`;
+      }
+      // 超限则降级：宽度 ×0.7、质量 -0.1
+      width = Math.round(width * 0.7);
+      compress = Math.max(0.3, compress - 0.1);
+    } catch {
+      break;
+    }
+  }
+  // 最终兜底：更小尺寸 + 更低质量
+  try {
+    const rendered = await ImageManipulator.manipulate(uri).resize({ width: 480 }).renderAsync();
+    const saved = await rendered.saveAsync({ compress: 0.35, format: SaveFormat.JPEG, base64: true });
+    if (saved.base64) return `data:image/jpeg;base64,${saved.base64}`;
+  } catch { /* 继续兜底 */ }
+  return '';
+}
+
 type Msg = {
   role: string;
   content: string;          // 完整内容（含附件），用于 API 请求和历史持久化
@@ -225,13 +256,15 @@ export default function ChatScreen() {
 
       let dataUrl = '';
       try {
-        const rendered = await ImageManipulator.manipulate(asset.uri).resize({ width: 1024 }).renderAsync();
-        const saved = await rendered.saveAsync({ compress: 0.6, format: SaveFormat.JPEG, base64: true });
-        dataUrl = `data:image/jpeg;base64,${saved.base64}`;
+        dataUrl = await compressImageToDataUrl(asset.uri);
       } catch {
         dataUrl = asset.base64
           ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}`
           : asset.uri;
+      }
+      if (!dataUrl) {
+        Alert.alert('Frapi AI', '图片压缩失败，请更换一张较小的图片');
+        return;
       }
       setImage(dataUrl);
     } catch (e: any) {
@@ -267,14 +300,16 @@ export default function ChatScreen() {
         || mime.includes('officedocument') || mime.startsWith('application/msword');
 
       if (mime.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.heic', '.heif', '.bmp'].some(ext => lowerName.endsWith(ext))) {
-        // 图片统一走图片通道：压缩到 1024px 宽 / JPEG 60%
+        // 图片统一走图片通道：带体积保护的压缩
         let dataUrl = '';
         try {
-          const rendered = await ImageManipulator.manipulate(file.uri).resize({ width: 1024 }).renderAsync();
-          const saved = await rendered.saveAsync({ compress: 0.6, format: SaveFormat.JPEG, base64: true });
-          dataUrl = `data:image/jpeg;base64,${saved.base64}`;
+          dataUrl = await compressImageToDataUrl(file.uri);
         } catch {
           dataUrl = file.uri;
+        }
+        if (!dataUrl) {
+          Alert.alert('Frapi AI', '图片压缩失败，请更换一张较小的图片');
+          return;
         }
         setImage(dataUrl);
       } else if (isBinaryDoc) {
@@ -493,7 +528,13 @@ export default function ChatScreen() {
         setMessages(prev => prev.slice(0, -1));
       }
       if (!aborted) {
-        Alert.alert('Frapi AI', '对话请求失败: ' + (e?.message || e));
+        const rawMsg = String(e?.message || e);
+        // iOS fetch 大 payload 崩溃的友好提示
+        if (rawMsg.includes('Bad file descriptor') || rawMsg.includes('fetch failed')) {
+          Alert.alert('Frapi AI', '图片过大导致请求失败，请更换一张较小的图片或截图后再试');
+        } else {
+          Alert.alert('Frapi AI', '对话请求失败: ' + rawMsg);
+        }
         console.error(e);
       }
     } finally {

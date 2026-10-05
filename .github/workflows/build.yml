@@ -101,6 +101,23 @@ jobs:
           echo "=== LAST 40 LINES ==="
           tail -40 xcodebuild.log
           exit $EXIT_CODE
+      - name: Pre-sign main binary for TrollStore (ldid, no get-task-allow)
+        run: |
+          # TrollStore 对完全无 entitlements 的二进制会注入含 get-task-allow 的兜底配置，
+          # 导致 iOS 16+ 强制要求开发者模式（错误182：不开启即无日志闪退）。
+          # 预签一份不含任何调试权限的 entitlements，安装时 TrollStore 会原样保留。
+          brew install ldid
+          APP_PATH=$(find ios/build/Build/Products/Release-iphoneos -name "*.app" -maxdepth 1 | head -1)
+          BIN="$APP_PATH/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist")"
+          ENT="$GITHUB_WORKSPACE/scripts/trollstore-entitlements.plist"
+          echo "=== Pre-signing: $BIN ==="
+          ldid -S"$ENT" "$BIN"
+          echo "=== Verify embedded entitlements (must NOT contain get-task-allow) ==="
+          ldid -e "$BIN"
+          if ldid -e "$BIN" | grep -q "get-task-allow"; then
+            echo "ERROR: get-task-allow still present in main binary"
+            exit 1
+          fi
       - name: Package unsigned IPA
         run: |
           mkdir -p Payload

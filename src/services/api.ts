@@ -63,6 +63,12 @@ function friendlyError(status: number, rawText: string): string {
   return `HTTP ${status} 请求失败`;
 }
 
+// 本地存储 JSON 解析兜底：数据损坏时返回 fallback，避免启动/读取即崩溃
+function safeParse(raw: string | null, fallback: any): any {
+  if (!raw) return fallback;
+  try { return JSON.parse(raw); } catch { return fallback; }
+}
+
 // 构造用户消息内容：支持纯文本 / 文本+图片 / 文本+音频 / 文本+图片+音频
 function buildUserContent(args: any): any {
   const hasMedia = args.image || args.audio;
@@ -156,19 +162,22 @@ export const api = {
   async saveHistory(sessionId: string, messages: any[]) {
     await AsyncStorage.setItem(`history_${sessionId}`, JSON.stringify(messages));
     const idxRaw = await AsyncStorage.getItem('sessions_index');
-    let idx: any[] = idxRaw ? JSON.parse(idxRaw) : [];
+    let idx: any[] = safeParse(idxRaw, []);
+    if (!Array.isArray(idx)) idx = [];
     idx = [{ id: sessionId, updatedAt: Date.now() }, ...idx.filter((s: any) => s.id !== sessionId)];
     await AsyncStorage.setItem('sessions_index', JSON.stringify(idx));
   },
 
   async loadHistory(sessionId: string) {
     const history = await AsyncStorage.getItem(`history_${sessionId}`);
-    return history ? JSON.parse(history) : [];
+    const parsed = safeParse(history, []);
+    return Array.isArray(parsed) ? parsed : [];
   },
 
   async listSessions() {
     const idxRaw = await AsyncStorage.getItem('sessions_index');
-    let idx: any[] = idxRaw ? JSON.parse(idxRaw) : [];
+    let idx: any[] = safeParse(idxRaw, []);
+    if (!Array.isArray(idx)) idx = [];
     // 兼容：索引起步前，从 history_ 键恢复
     if (idx.length === 0) {
       const allKeys = await AsyncStorage.getAllKeys();
@@ -191,8 +200,9 @@ export const api = {
   async deleteSession(sessionId: string) {
     await AsyncStorage.removeItem(`history_${sessionId}`);
     const idxRaw = await AsyncStorage.getItem('sessions_index');
-    if (idxRaw) {
-      const idx: any[] = JSON.parse(idxRaw).filter((s: any) => s.id !== sessionId);
+    const parsed = safeParse(idxRaw, null);
+    if (Array.isArray(parsed)) {
+      const idx: any[] = parsed.filter((s: any) => s.id !== sessionId);
       await AsyncStorage.setItem('sessions_index', JSON.stringify(idx));
     }
   },
@@ -246,8 +256,13 @@ export const api = {
   },
 
   async loadConfig() {
-    const config = await AsyncStorage.getItem('agent_config');
-    return config ? JSON.parse(config) : null;
+    try {
+      const config = await AsyncStorage.getItem('agent_config');
+      return config ? JSON.parse(config) : null;
+    } catch {
+      await AsyncStorage.removeItem('agent_config');
+      return null;
+    }
   },
 
   async clearConfig() {

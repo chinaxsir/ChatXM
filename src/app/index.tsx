@@ -7,6 +7,7 @@ import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as DocumentPicker from 'expo-document-picker';
 import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
 import { ThemedText } from '@/components/themed-text';
+import { ModelIcon } from '@/components/model-icon';
 import { api } from '@/services/api';
 import * as Clipboard from 'expo-clipboard';
 import Markdown from 'react-native-markdown-display';
@@ -1117,14 +1118,6 @@ export default function ChatScreen() {
               <View style={styles.modelCardGrid}>
                 {officialModels.map((m) => {
                   const isSelected = model === m;
-                  // 根据模型池名推断 emoji 图标
-                  const icon =
-                    m.toLowerCase().includes('gemini') ? '♊️' :
-                    m.toLowerCase().includes('glm') ? '🧠' :
-                    m.toLowerCase().includes('kilo') ? '⚡' :
-                    m.toLowerCase().includes('gpt') ? '🔵' :
-                    m.toLowerCase().includes('claude') ? '🔶' :
-                    '🤖';
                   // 估算该池包含的模型数量
                   const groupIds = _allIds.filter((id) => id === m || id.startsWith(`${m}-`));
                   return (
@@ -1147,7 +1140,7 @@ export default function ChatScreen() {
                       activeOpacity={0.7}
                     >
                       <View style={styles.modelCardTop}>
-                        <Text style={styles.modelCardIcon}>{icon}</Text>
+                        <ModelIcon name={m} size={26} color={C.aiText} />
                         {isSelected && (
                           <View style={[styles.modelCardCheck, { backgroundColor: C.accent }]}>
                             <Text style={styles.modelCardCheckText}>✓</Text>
@@ -1338,7 +1331,6 @@ const styles = StyleSheet.create({
     paddingBottom: 10,
   },
   modelCardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
-  modelCardIcon: { fontSize: 22 },
   modelCardDot: { width: 10, height: 10, borderRadius: 5 },
   modelCardCheck: { width: 20, height: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   modelCardCheckText: { color: '#FFF', fontSize: 11, fontWeight: '700', lineHeight: 13 },

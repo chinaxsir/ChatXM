@@ -15,7 +15,7 @@ import * as Haptics from 'expo-haptics';
 import LoginScreen from './login';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 
-const BUILTIN_ENDPOINT = 'https://api.frapi.kdns.fr';
+const BUILTIN_ENDPOINT = 'https://gate.127110.xyz';
 
 // 压缩图片为 data URL：逐步降级确保 base64 体积安全
 // 防止 iOS fetch 处理超大请求体时崩溃（Bad file descriptor at ExpoModulesCore/Promise.swift:56）
@@ -125,7 +125,7 @@ export default function ChatScreen() {
     setIsTranscribing(false);
     // no-speech / aborted 属于正常交互，静默处理
     if (event.error && event.error !== 'no-speech' && event.error !== 'aborted') {
-      Alert.alert('Frapi AI', '语音识别失败: ' + (event.message || event.error));
+      Alert.alert('Chat X', '语音识别失败: ' + (event.message || event.error));
     }
   });
 
@@ -246,7 +246,7 @@ export default function ChatScreen() {
       const perm = useCamera
         ? await ImagePicker.requestCameraPermissionsAsync()
         : await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (perm.status !== 'granted') { Alert.alert('Frapi AI', '需要授权访问' + (useCamera ? '相机' : '相册')); return; }
+      if (perm.status !== 'granted') { Alert.alert('Chat X', '需要授权访问' + (useCamera ? '相机' : '相册')); return; }
 
       const result = useCamera
         ? await ImagePicker.launchCameraAsync(options)
@@ -263,12 +263,12 @@ export default function ChatScreen() {
           : asset.uri;
       }
       if (!dataUrl) {
-        Alert.alert('Frapi AI', '图片压缩失败，请更换一张较小的图片');
+        Alert.alert('Chat X', '图片压缩失败，请更换一张较小的图片');
         return;
       }
       setImage(dataUrl);
     } catch (e: any) {
-      Alert.alert('Frapi AI', '获取图片失败: ' + (e?.message || e));
+      Alert.alert('Chat X', '获取图片失败: ' + (e?.message || e));
     }
   };
 
@@ -308,7 +308,7 @@ export default function ChatScreen() {
           dataUrl = file.uri;
         }
         if (!dataUrl) {
-          Alert.alert('Frapi AI', '图片压缩失败，请更换一张较小的图片');
+          Alert.alert('Chat X', '图片压缩失败，请更换一张较小的图片');
           return;
         }
         setImage(dataUrl);
@@ -336,7 +336,7 @@ export default function ChatScreen() {
         // 读取失败或内容为空时显式提示，避免 AI 收到空内容
         if (!content.trim()) {
           Alert.alert(
-            'Frapi AI',
+            'Chat X',
             readError
               ? `文件内容读取失败：${readError}`
               : `文件「${file.name}」内容为空，AI 将无法读取其内容`
@@ -357,7 +357,7 @@ export default function ChatScreen() {
         setFileContent(finalContent + truncatedNotice);
       }
     } catch (e: any) {
-      Alert.alert('Frapi AI', '选择文件失败: ' + (e?.message || e));
+      Alert.alert('Chat X', '选择文件失败: ' + (e?.message || e));
     }
   };
 
@@ -389,13 +389,13 @@ export default function ChatScreen() {
     // 余额检查：新注册用户有 $1 额度，余额耗尽则拦截
     const balance = Number(config.balance ?? 0);
     if (config.balance != null && balance <= 0) {
-      Alert.alert('Frapi AI', '余额不足，请前往「设置」充值后继续使用');
+      Alert.alert('Chat X', '余额不足，请前往「设置」充值后继续使用');
       return;
     }
 
     const target = resolveTarget();
     if (!target.token) {
-      Alert.alert('Frapi AI', '未配置 API Key，请重新登录或在设置中添加 API');
+      Alert.alert('Chat X', '未配置 API Key，请重新登录或在设置中添加 API');
       return;
     }
 
@@ -531,9 +531,9 @@ export default function ChatScreen() {
         const rawMsg = String(e?.message || e);
         // iOS fetch 大 payload 崩溃的友好提示
         if (rawMsg.includes('Bad file descriptor') || rawMsg.includes('fetch failed')) {
-          Alert.alert('Frapi AI', '图片过大导致请求失败，请更换一张较小的图片或截图后再试');
+          Alert.alert('Chat X', '图片过大导致请求失败，请更换一张较小的图片或截图后再试');
         } else {
-          Alert.alert('Frapi AI', '对话请求失败: ' + rawMsg);
+          Alert.alert('Chat X', '对话请求失败: ' + rawMsg);
         }
         console.error(e);
       }
@@ -570,14 +570,14 @@ export default function ChatScreen() {
 
   // 导出当前会话为文本
   const exportSession = async () => {
-    if (messages.length === 0) { Alert.alert('Frapi AI', '当前会话无内容可导出'); return; }
+    if (messages.length === 0) { Alert.alert('Chat X', '当前会话无内容可导出'); return; }
     const text = messages.map(m => {
       const role = m.role === 'user' ? '我' : 'AI';
       return `[${role}]\n${m.displayContent || m.content}`;
     }).join('\n\n');
-    const full = `Frapi AI 会话导出\n时间: ${new Date().toLocaleString()}\n模型: ${model === 'frapi' ? '官方 API' : model}\n\n${text}`;
+    const full = `Chat X 会话导出\n时间: ${new Date().toLocaleString()}\n模型: ${model === 'frapi' ? '官方 API' : model}\n\n${text}`;
     await Clipboard.setStringAsync(full);
-    Alert.alert('Frapi AI', '会话内容已复制到剪贴板，可粘贴到任意位置保存');
+    Alert.alert('Chat X', '会话内容已复制到剪贴板，可粘贴到任意位置保存');
   };
 
   // ========== 语音输入（调用设备端侧原生语音识别，零 API 依赖） ==========
@@ -590,7 +590,7 @@ export default function ChatScreen() {
     try {
       const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!perm.granted) {
-        Alert.alert('Frapi AI', '需要麦克风与语音识别权限，请在系统设置中开启');
+        Alert.alert('Chat X', '需要麦克风与语音识别权限，请在系统设置中开启');
         return;
       }
       inputRef.current?.blur(); // 收起键盘，避免输入区高度跳动
@@ -615,7 +615,7 @@ export default function ChatScreen() {
     } catch (e: any) {
       clearVoiceTimer();
       setIsTranscribing(false);
-      Alert.alert('Frapi AI', '启动语音识别失败: ' + (e?.message || e));
+      Alert.alert('Chat X', '启动语音识别失败: ' + (e?.message || e));
     }
   };
 
@@ -692,34 +692,32 @@ export default function ChatScreen() {
   };
 
   // 自动同步模型列表（APP启动时+打开模型面板时触发）
-  // 第三方API：服务端 /v1/models 为权威来源，拉取失败静默降级保留本地快照；手动输入的模型(manual_models)始终保留
-  // 官方智能模型组（池）：站长命名规则=池名与模型系同名（gemini池→gemini-3.1-flash…、glm池→glm-5.1…），
-  //   因此 /v1/models 中「是其他 id 的 '-' 前缀的 id」即池名（gemini、glm…），纯本地识别零探测请求；
-  //   frapi 默认池保底；识别结果为空时保留上次缓存
+  // 官方模型：gate.127110.xyz 的 /v1/models 免鉴权，无条件拉取
+  //   池名识别：gemini、glm 等（存在其他 id = 池名 + '-' + 版本号）
+  //   当前模型若不在列表中 → 自动回退第一池
+  // 第三方API：服务端 /v1/models 为权威来源，拉取失败静默降级保留本地快照
   const refreshThirdPartyModels = async (baseConfig: any) => {
     const apis: any[] = [...(baseConfig?.third_party_apis || [])];
     let changed = false;
-    // 官方智能模型组自动识别
-    let fetchedIds: string[] | null = null; // 权威：/v1/models 完整 id 列表
-    const officialKey = baseConfig?.primary_api_key || baseConfig?.api_keys?.[0] || '';
-    if (officialKey) {
-      try {
-        const res = await api.fetchModels(baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT, officialKey);
-        const ids: string[] = Array.from(new Set(res?.data?.map((m: any) => m.id).filter(Boolean) || []));
-        if (ids.length > 0) {
-          fetchedIds = ids;
-          // 池名精准识别规则：存在其他 id = 该 id + '-' + 数字（版本号）开头
-          // 只有真正的池别名才能派生出带版本号的真实模型（gemini-3.5-flash、glm-4.5…）
-          // gemini-3.5-flash-lite、glm-5.3-flash 等变体是「真实模型的变体」，不构成新池
-          const poolNames = ids.filter((id) => ids.some((o) => o !== id && new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d`).test(o)));
-          const prevIds: string[] = baseConfig?.official_model_ids || [];
-          if (JSON.stringify(ids) !== JSON.stringify(prevIds)) changed = true;
-          // 后台暴露池别名且变化时，同步更新 official_groups；渲染端优先从 official_model_ids 实时计算
-          const prevGroups: string[] = baseConfig?.official_groups?.length ? baseConfig.official_groups : [];
-          if (JSON.stringify(poolNames) !== JSON.stringify(prevGroups)) changed = true;
-        }
-      } catch { /* 静默降级：保留缓存 */ }
-    }
+
+    // ===== 官方模型同步：无条件拉取（/v1/models 免鉴权） =====
+    let fetchedIds: string[] | null = null;
+    try {
+      const endpoint = baseConfig?.builtin_endpoint || BUILTIN_ENDPOINT;
+      const res = await api.fetchModels(endpoint);
+      const ids: string[] = Array.from(new Set(res?.data?.map((m: any) => m.id).filter(Boolean) || []));
+      if (ids.length > 0) {
+        fetchedIds = ids;
+        // 池名识别：该 id + '-' + 数字开头的其他 id 存在
+        const poolNames = ids.filter((id) => ids.some((o) => o !== id && new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d`).test(o)));
+        const prevIds: string[] = baseConfig?.official_model_ids || [];
+        if (JSON.stringify(ids) !== JSON.stringify(prevIds)) changed = true;
+        const prevGroups: string[] = baseConfig?.official_groups?.length ? baseConfig.official_groups : [];
+        if (JSON.stringify(poolNames) !== JSON.stringify(prevGroups)) changed = true;
+      }
+    } catch { /* 静默降级 */ }
+
+    // ===== 第三方 API 同步 =====
     if (apis.length > 0) await Promise.all(apis.map(async (tp: any, idx: number) => {
       if (!tp?.endpoint || !tp?.apiKey) return;
       try {
@@ -732,37 +730,36 @@ export default function ChatScreen() {
             changed = true;
           }
         }
-      } catch { /* 静默降级：网络异常/临时故障时保留本地快照 */ }
+      } catch { /* 静默降级：网络异常时保留本地快照 */ }
     }));
-    // fetchedIds 是从 /v1/models 拿到的权威完整列表（官方端），有新数据必须写回作为渲染端的数据源
-    // changed 同时覆盖第三方 API 变化和 fetchedIds 变化
+
+    // 没变化且无新数据则跳过写回
     if (!changed && !fetchedIds) return;
-    // 以 configRef 最新配置为基准写回：刷新期间用户可能已切换模型/产生扣费，
-    // 用传入的 baseConfig 展开会把那些字段覆盖回旧值
+
     const latest = configRef.current || baseConfig;
     const updated: any = { ...latest, third_party_apis: apis };
-    if (fetchedIds) {
-      updated.official_model_ids = fetchedIds;
-    }
-    // 渲染端实时从 official_model_ids 过滤出池名，official_groups 仅作兼容/回退
-    // 当前选中的模型若已被删除/改名，自动回退，避免引用失效
-    // 渲染前实时过滤：从完整 ids 中识别池名（id 后接 '-' + 数字版本号）
+    if (fetchedIds) updated.official_model_ids = fetchedIds;
+
+    // ===== 自动回退：当前选中的模型不在新列表中 =====
     const curIds: string[] = updated.official_model_ids?.length ? updated.official_model_ids : [];
+    // 从完整 ids 实时识别池名
     const curPoolNames = curIds.filter((id) => curIds.some((o) => o !== id && new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d`).test(o)));
-    const groupsNow: string[] = curPoolNames.length > 0 ? curPoolNames : (updated.official_groups?.length ? updated.official_groups : ['frapi']);
+    // 兜底：如果没有池名但有 ids，用第一个 id 作为 fallback
+    const groupsNow: string[] = curPoolNames.length > 0 ? curPoolNames : (curIds.length > 0 ? curIds : (updated.official_groups?.length ? updated.official_groups : []));
+
     const cur = String(updated.current_model || '');
     if (cur.startsWith('tp:')) {
       const parts = cur.split(':');
       const idx = Number(parts[1]);
       const modelName = parts.slice(2).join(':');
       if (!apis[idx]?.models?.includes(modelName)) {
-        updated.current_model = groupsNow[0] || 'frapi';
-        setModel(groupsNow[0] || 'frapi');
+        const fallback = groupsNow[0];
+        if (fallback) { updated.current_model = fallback; setModel(fallback); }
       }
-    } else if (!groupsNow.includes(cur)) {
-      // 官方组被删除/改名 → 回退第一组
-      updated.current_model = groupsNow[0] || 'frapi';
-      setModel(groupsNow[0] || 'frapi');
+    } else if (fetchedIds && !groupsNow.includes(cur) && !curIds.includes(cur)) {
+      // 官方模型被删除/改名 → 回退第一池
+      const fallback = groupsNow[0];
+      if (fallback) { updated.current_model = fallback; setModel(fallback); }
     }
     applyConfig(updated);
     await api.saveConfig(updated);
@@ -848,7 +845,7 @@ export default function ChatScreen() {
             <View style={[styles.emptyLogo, { backgroundColor: C.accent }]}>
               <Text style={styles.emptyLogoText}>AI</Text>
             </View>
-            <ThemedText style={[styles.emptyTitle, { color: C.btnText }]}>你好，我是 Frapi AI</ThemedText>
+            <ThemedText style={[styles.emptyTitle, { color: C.btnText }]}>你好，我是 Chat X</ThemedText>
             <ThemedText style={[styles.emptySubtitle, { color: C.sub }]}>随时为你提供智能对话服务</ThemedText>
             <View style={styles.emptyChips}>
               {['帮我写一段代码', '解释一下这个概念', '翻译这段话', '帮我润色文案'].map((q) => (
@@ -1101,7 +1098,7 @@ export default function ChatScreen() {
         </View>
       </Modal>
 
-      {/* 模型选择面板 */}
+      {/* 模型选择面板 — 卡片化网格布局 */}
       <Modal visible={showModel} animationType="slide" transparent onRequestClose={() => setShowModel(false)}>
         <View style={styles.modalMask}>
           <Pressable style={{ flex: 1 }} onPress={() => setShowModel(false)} />
@@ -1110,31 +1107,118 @@ export default function ChatScreen() {
               <ThemedText type="subtitle">选择模型</ThemedText>
               <TouchableOpacity onPress={() => setShowModel(false)}><ThemedText style={{ color: C.sub }}>关闭</ThemedText></TouchableOpacity>
             </View>
-            <ScrollView style={{ maxHeight: 420 }} nestedScrollEnabled>
-              <ThemedText style={{ color: C.sub, fontSize: 12, paddingVertical: 6 }}>官方</ThemedText>
-              {officialModels.map(m => (
-                <TouchableOpacity
-                  key={`of-${m}`}
-                  style={[styles.modelOption, { borderBottomColor: C.border }, model === m && { backgroundColor: C.chip }]}
-                  onPress={() => changeModel(m)}
-                >
-                  <ThemedText style={{ fontWeight: model === m ? '600' : '400' }}>{m}</ThemedText>
-                  {model === m && <ThemedText style={{ color: C.accent }}>✓</ThemedText>}
-                </TouchableOpacity>
-              ))}
+            <ScrollView style={{ maxHeight: 480 }} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+              {/* 官方模型卡片组 */}
+              <View style={styles.modelSectionHeader}>
+                <View style={[styles.modelSectionDot, { backgroundColor: C.accent }]} />
+                <ThemedText style={[styles.modelSectionTitle, { color: C.sub }]}>官方智能模型</ThemedText>
+                <ThemedText style={[styles.modelSectionCount, { color: C.sub }]}>{officialModels.length} 组</ThemedText>
+              </View>
+              <View style={styles.modelCardGrid}>
+                {officialModels.map((m) => {
+                  const isSelected = model === m;
+                  // 根据模型池名推断 emoji 图标
+                  const icon =
+                    m.toLowerCase().includes('gemini') ? '♊️' :
+                    m.toLowerCase().includes('glm') ? '🧠' :
+                    m.toLowerCase().includes('kilo') ? '⚡' :
+                    m.toLowerCase().includes('gpt') ? '🔵' :
+                    m.toLowerCase().includes('claude') ? '🔶' :
+                    '🤖';
+                  // 估算该池包含的模型数量
+                  const groupIds = _allIds.filter((id) => id === m || id.startsWith(`${m}-`));
+                  return (
+                    <TouchableOpacity
+                      key={`of-${m}`}
+                      style={[
+                        styles.modelCard,
+                        {
+                          backgroundColor: C.bg,
+                          borderColor: isSelected ? C.accent : C.border,
+                          borderWidth: isSelected ? 2 : 1,
+                          shadowOpacity: isSelected ? 0.15 : 0,
+                          shadowColor: C.accent,
+                          shadowOffset: { width: 0, height: 2 },
+                          shadowRadius: 8,
+                          elevation: isSelected ? 3 : 0,
+                        },
+                      ]}
+                      onPress={() => changeModel(m)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.modelCardTop}>
+                        <Text style={styles.modelCardIcon}>{icon}</Text>
+                        {isSelected && (
+                          <View style={[styles.modelCardCheck, { backgroundColor: C.accent }]}>
+                            <Text style={styles.modelCardCheckText}>✓</Text>
+                          </View>
+                        )}
+                      </View>
+                      <ThemedText style={[styles.modelCardName, isSelected && { color: C.accent }]}>{m}</ThemedText>
+                      <View style={[styles.modelCardBadge, { backgroundColor: C.accentSoft }]}>
+                        <ThemedText style={[styles.modelCardBadgeText, { color: C.accent }]}>{groupIds.length || 1} 个模型</ThemedText>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {/* 第三方 API 卡片组 */}
               {thirdPartyModels.length > 0 && (
-                <ThemedText style={{ color: C.sub, fontSize: 12, paddingVertical: 6 }}>第三方 API</ThemedText>
+                <>
+                  <View style={styles.modelSectionHeader}>
+                    <View style={[styles.modelSectionDot, { backgroundColor: '#34C759' }]} />
+                    <ThemedText style={[styles.modelSectionTitle, { color: C.sub }]}>第三方 API</ThemedText>
+                    <ThemedText style={[styles.modelSectionCount, { color: C.sub }]}>{thirdPartyModels.length} 个</ThemedText>
+                  </View>
+                  <View style={styles.modelCardGrid}>
+                    {thirdPartyModels.map((m) => {
+                      const isSelected = model === m.value;
+                      return (
+                        <TouchableOpacity
+                          key={m.value}
+                          style={[
+                            styles.modelCard,
+                            {
+                              backgroundColor: C.bg,
+                              borderColor: isSelected ? C.accent : C.border,
+                              borderWidth: isSelected ? 2 : 1,
+                              shadowOpacity: isSelected ? 0.15 : 0,
+                              shadowColor: C.accent,
+                              shadowOffset: { width: 0, height: 2 },
+                              shadowRadius: 8,
+                              elevation: isSelected ? 3 : 0,
+                            },
+                          ]}
+                          onPress={() => changeModel(m.value)}
+                          activeOpacity={0.7}
+                        >
+                          <View style={styles.modelCardTop}>
+                            <View style={[styles.modelCardDot, { backgroundColor: isSelected ? C.accent : '#34C759' }]} />
+                            {isSelected && (
+                              <View style={[styles.modelCardCheck, { backgroundColor: C.accent }]}>
+                                <Text style={styles.modelCardCheckText}>✓</Text>
+                              </View>
+                            )}
+                          </View>
+                          <ThemedText style={[styles.modelCardName, isSelected && { color: C.accent }]} numberOfLines={1}>{m.label.split(' · ')[0]}</ThemedText>
+                          <ThemedText style={[styles.modelCardSub, { color: C.sub }]} numberOfLines={1}>{m.label.split(' · ')[1] || m.value}</ThemedText>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </>
               )}
-              {thirdPartyModels.map(m => (
-                <TouchableOpacity
-                  key={m.value}
-                  style={[styles.modelOption, { borderBottomColor: C.border }, model === m.value && { backgroundColor: C.chip }]}
-                  onPress={() => changeModel(m.value)}
-                >
-                  <ThemedText style={{ fontWeight: model === m.value ? '600' : '400' }}>{m.label}</ThemedText>
-                  {model === m.value && <ThemedText style={{ color: C.accent }}>✓</ThemedText>}
-                </TouchableOpacity>
-              ))}
+
+              {/* 当前选中提示 */}
+              <View style={[styles.modelFooterHint, { backgroundColor: C.bg }]}>
+                <Text style={[styles.modelFooterIcon, { color: C.accent }]}>💡</Text>
+                <ThemedText style={[styles.modelFooterText, { color: C.sub }]}>
+                  {model === 'frapi' || isOfficialModel(model)
+                    ? '当前使用：官方 API · 流量稳定 · 免 Key'
+                    : '当前使用：第三方 API · 消耗独立额度'}
+                </ThemedText>
+              </View>
             </ScrollView>
           </View>
         </View>
@@ -1240,6 +1324,31 @@ const styles = StyleSheet.create({
   searchInput: { borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, marginBottom: 10, fontSize: 14 },
   sessionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, gap: 8 },
   modelOption: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 4, borderBottomWidth: StyleSheet.hairlineWidth },
+  // ===== 模型选择器卡片化样式 =====
+  modelSectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, marginBottom: 10, paddingHorizontal: 2 },
+  modelSectionDot: { width: 6, height: 6, borderRadius: 3 },
+  modelSectionTitle: { fontSize: 13, fontWeight: '600', flex: 1 },
+  modelSectionCount: { fontSize: 11 },
+  modelCardGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 14 },
+  modelCard: {
+    width: '48%',
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 12,
+    paddingBottom: 10,
+  },
+  modelCardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  modelCardIcon: { fontSize: 22 },
+  modelCardDot: { width: 10, height: 10, borderRadius: 5 },
+  modelCardCheck: { width: 20, height: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  modelCardCheckText: { color: '#FFF', fontSize: 11, fontWeight: '700', lineHeight: 13 },
+  modelCardName: { fontSize: 14, fontWeight: '700', marginBottom: 4 },
+  modelCardSub: { fontSize: 11, marginTop: 2 },
+  modelCardBadge: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, marginTop: 4 },
+  modelCardBadgeText: { fontSize: 10, fontWeight: '600' },
+  modelFooterHint: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, marginBottom: 4, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth },
+  modelFooterIcon: { fontSize: 16 },
+  modelFooterText: { fontSize: 12, flex: 1, lineHeight: 16 },
   // 按住说话全屏浮层
   voiceOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
   voiceCard: { width: 210, minHeight: 230, paddingVertical: 26, paddingHorizontal: 18, borderRadius: 22, backgroundColor: 'rgba(28,28,30,0.88)', borderWidth: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },

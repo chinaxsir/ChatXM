@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { uploadAsync, FileSystemUploadType } from 'expo-file-system/legacy';
 
-const BASE_API_URL = "https://api.frapi.kdns.fr";
+const BASE_API_URL = "https://gate.127110.xyz";
 
 // 自动清洗 endpoint：去掉尾部斜杠 + /v1 及其后的路径，返回 base URL
 function normalizeEndpoint(url: string): string {
@@ -30,14 +30,14 @@ function stripHtml(html: string): string {
 // HTTP 状态码 → 友好提示
 const STATUS_HINTS: Record<number, string> = {
   400: '请求格式错误',
-  401: 'API Key 无效或已过期，请检查后重试',
+  401: 'API Key 无效或缺，请先登录后在账户页面确认已生成 API Key',
   403: '无权限访问该接口',
   404: '接口地址不存在，请检查 Endpoint 配置是否正确',
   408: '请求超时，请检查网络后重试',
   429: '请求过于频繁，请稍后重试',
   500: '服务器内部错误',
   502: '网关错误',
-  503: '服务暂不可用',
+  503: '上游 AI 节点暂不可用，请稍后重试',
   504: '网关超时',
 };
 
@@ -100,6 +100,31 @@ function sanitizeMessages(raw: any[]): any[] {
     .filter(Boolean);
 }
 
+// 统一的 JSON 解析助手：安全地从 response 中提取 JSON，兼容非 200 状态码和空 body
+async function safeJson(response: Response): Promise<any> {
+  const text = await response.text();
+  if (!text || !text.trim()) {
+    // 空 body：返回一个包含 status code 的错误对象
+    return {
+      status: response.ok ? 'success' : 'error',
+      code: response.status,
+      message: response.ok ? '' : `HTTP ${response.status} ${response.statusText || ''}`.trim(),
+      data: null,
+    };
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    // 非 JSON：包装为错误对象
+    return {
+      status: 'error',
+      code: response.status,
+      message: text.slice(0, 200),
+      data: null,
+    };
+  }
+}
+
 export const api = {
   // 登录
   async login(credentials: any) {
@@ -108,7 +133,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(credentials),
     });
-    return response.json();
+    return safeJson(response);
   },
 
   // 获取 API Keys（与 PC 端 Rust 后端一致：先 dashboard 后 tokens，用 x-session-token）
@@ -122,7 +147,13 @@ export const api = {
         const response = await fetch(url, {
           headers: { 'x-session-token': sessionToken, 'Authorization': sessionToken },
         });
-        if (response.ok) return response.json();
+        if (response.ok) {
+          const data = await safeJson(response);
+          // 兼容新旧格式：成功时才返回
+          if (data?.status === 'success' || data?.code === 200 || data?.success === true) {
+            return data;
+          }
+        }
       } catch { /* 尝试下一个 */ }
     }
     return {};
@@ -139,10 +170,9 @@ export const api = {
         body: JSON.stringify({ voucher_code: voucherCode }),
         signal: controller.signal,
       });
-      const text = await response.text();
       clearTimeout(timer);
-      console.log('=== recharge response raw ===', text?.substring(0, 200));
-      try { return JSON.parse(text); } catch { return { status: 'error', message: text || `HTTP ${response.status}` }; }
+      const data = await safeJson(response);
+      return data;
     } catch (e) {
       clearTimeout(timer);
       console.warn('=== recharge error ===', e);
@@ -155,7 +185,7 @@ export const api = {
     const response = await fetch(`${BASE_API_URL}/api/client-portal/dashboard`, {
       headers: { 'x-session-token': sessionToken },
     });
-    return response.json();
+    return safeJson(response);
   },
 
   // 历史消息持久化（带会话索引）
@@ -257,8 +287,26 @@ export const api = {
 
   async loadConfig() {
     try {
-      const config = await AsyncStorage.getItem('agent_config');
-      return config ? JSON.parse(config) : null;
+      const raw = await AsyncStorage.getItem('agent_config');
+      if (!raw) return null;
+      const config = JSON.parse(raw);
+      // 存量用户 endpoint 自动迁移：旧域名 frapi.kdns.fr → 新域名 gate.127110.xyz
+      // 同时迁移 BASE_API_URL（门户 API）和 builtin_endpoint（OpenAI 兼容接口）
+      let needsSave = false;
+      const NEW_OFFICIAL = 'https://gate.127110.xyz';
+      if (config.builtin_endpoint && config.builtin_endpoint.includes('frapi.kdns.fr')) {
+        config.builtin_endpoint = NEW_OFFICIAL;
+        needsSave = true;
+      }
+      // 兜底：即使没有旧域名，也强制确保 builtin_endpoint 等于官方新域名（防止用户手动改过导致不一致）
+      if (!config.builtin_endpoint || config.builtin_endpoint !== NEW_OFFICIAL) {
+        config.builtin_endpoint = NEW_OFFICIAL;
+        needsSave = true;
+      }
+      if (needsSave) {
+        await AsyncStorage.setItem('agent_config', JSON.stringify(config));
+      }
+      return config;
     } catch {
       await AsyncStorage.removeItem('agent_config');
       return null;
@@ -283,15 +331,14 @@ export const api = {
     await AsyncStorage.setItem('local_usage_stats', JSON.stringify(stats));
   },
 
-  async fetchModels(endpoint: string, apiKey: string) {
+  async fetchModels(endpoint: string, apiKey?: string) {
     const base = normalizeEndpoint(endpoint);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10000);
     try {
-      const response = await fetch(`${base}/v1/models`, {
-        headers: { 'Authorization': `Bearer ${apiKey}` },
-        signal: controller.signal,
-      });
+      const headers: Record<string, string> = {};
+      if (apiKey) headers['Authorization'] = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`;
+      const response = await fetch(`${base}/v1/models`, { headers, signal: controller.signal });
       clearTimeout(timer);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.json();
@@ -354,25 +401,51 @@ export const api = {
     let aborted = false;
     signal?.addEventListener('abort', () => { aborted = true; reader.cancel().catch(() => {}); });
 
-    while (!aborted) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+    // 30 秒空闲超时：防止 reader.read() 永久挂起（网关返回 200 但无后续数据）
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const resetIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (!aborted) {
+          aborted = true;
+          reader.cancel().catch(() => {});
+          throw new Error('AI 响应超时，请稍后重试');
+        }
+      }, 30000);
+    };
+    resetIdle();
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const data = trimmed.slice(5).trim();
-        if (!data || data === '[DONE]') continue;
-        try {
-          const json = JSON.parse(data);
-          const delta = json.choices?.[0]?.delta;
-          if (delta?.content) onDelta(delta.content);
-          if (json.usage) usage = json.usage;
-        } catch { /* 忽略非 JSON 行 */ }
+    try {
+      while (!aborted) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        resetIdle(); // 收到数据重置计时
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const data = trimmed.slice(5).trim();
+          if (!data || data === '[DONE]') continue;
+          try {
+            const json = JSON.parse(data);
+            // 流内可能携带错误（网关返回 200 但 data 里有 error）
+            if (json.error) {
+              throw new Error(json.error.message || 'AI 响应错误');
+            }
+            const delta = json.choices?.[0]?.delta;
+            if (delta?.content) onDelta(delta.content);
+            if (json.usage) usage = json.usage;
+          } catch (e: any) {
+            if (e?.message?.includes('AI 响应错误')) throw e;
+            // 忽略非 JSON 行
+          }
+        }
       }
+    } finally {
+      if (idleTimer) clearTimeout(idleTimer);
     }
     if (!aborted) onDone(usage || {});
   }

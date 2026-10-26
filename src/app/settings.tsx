@@ -161,7 +161,7 @@ export default function SettingsScreen() {
   };
 
   const handleRecharge = async () => {
-    if (!voucher.trim()) { Alert.alert('Frapi AI', '请输入卡密'); return; }
+    if (!voucher.trim()) { Alert.alert('Chat X', '请输入卡密'); return; }
     setBusy(true);
     try {
       const res = await api.recharge(config.session_token, voucher.trim());
@@ -169,7 +169,7 @@ export default function SettingsScreen() {
       // 兼容后端多种成功返回格式
       const ok = res?.status === 'success' || res?.code === 'success' || res?.code === 200 || res?.ok === true;
       if (ok) {
-        Alert.alert('Frapi AI', '充值成功' + (res?.data?.amount != null ? `，到账 ${res.data.amount}` : ''));
+        Alert.alert('Chat X', '充值成功' + (res?.data?.amount != null ? `，到账 ${res.data.amount}` : ''));
         setVoucher('');
         setShowRecharge(false);
         const updated = { ...config, balance: res?.data?.balance ?? config.balance };
@@ -178,10 +178,10 @@ export default function SettingsScreen() {
       } else {
         // 兼容后端 {code, message} 格式
         const msg = res?.message || res?.error?.message || res?.data?.message || JSON.stringify(res).substring(0, 80);
-        Alert.alert('Frapi AI', '充值失败: ' + msg);
+        Alert.alert('Chat X', '充值失败: ' + msg);
       }
     } catch (e: any) {
-      Alert.alert('Frapi AI', '充值失败: ' + (e?.message || e));
+      Alert.alert('Chat X', '充值失败: ' + (e?.message || e));
     } finally {
       setBusy(false);
     }
@@ -246,13 +246,13 @@ export default function SettingsScreen() {
 
   const handleSaveApi = async () => {
     if (!apiForm.endpoint.trim()) {
-      Alert.alert('Frapi AI', 'Endpoint 为必填项');
+      Alert.alert('Chat X', 'Endpoint 为必填项');
       return;
     }
     const isEdit = editingIdx != null;
     // 新增必须填写 Key；编辑时 Key 留空则沿用原密钥（不回显明文，保护隐私）
     if (!isEdit && !apiForm.apiKey.trim()) {
-      Alert.alert('Frapi AI', '新增 API 必须填写 API Key');
+      Alert.alert('Chat X', '新增 API 必须填写 API Key');
       return;
     }
     const finalKey = getEffectiveApiKey();
@@ -271,7 +271,7 @@ export default function SettingsScreen() {
       .filter(Boolean);
     const merged = Array.from(new Set([...list, ...manual]));
     if (merged.length === 0) {
-      Alert.alert('Frapi AI', '未能自动获取模型，请手动输入模型名称（逗号分隔）');
+      Alert.alert('Chat X', '未能自动获取模型，请手动输入模型名称（逗号分隔）');
       return;
     }
     const finalName = apiForm.name.trim() || '未命名 API';
@@ -308,7 +308,7 @@ export default function SettingsScreen() {
     setTestModels([]);
     setEditingIdx(null);
     setShowAddApi(false);
-    Alert.alert('Frapi AI', (isEdit ? '修改成功' : '添加成功') + '，共 ' + merged.length + ' 个模型');
+    Alert.alert('Chat X', (isEdit ? '修改成功' : '添加成功') + '，共 ' + merged.length + ' 个模型');
   };
 
   // 删除第三方 API（二次确认）；若当前对话正在使用它，自动回退官方 API

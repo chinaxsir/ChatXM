@@ -83,16 +83,37 @@ function buildUserContent(args: any): any {
 }
 
 // 清洗本地历史消息：仅保留 OpenAI 协议要求的 role/content，
-// 剥离 displayContent/image/fileName/audio 等 UI 字段与空消息，避免接口 400
+// 剥离 displayContent/fileName/audio 等 UI 字段与空消息，避免接口 400。
+// 关键：历史中用户发过图片时，必须把 image 字段重新合并进 content 数组，
+// 否则模型在多轮对话中看不到之前发过的图片。
 function sanitizeMessages(raw: any[]): any[] {
   return (Array.isArray(raw) ? raw : [])
     .map((m: any) => {
       if (!m) return null;
       const role = m.role === 'assistant' ? 'assistant' : 'user';
-      if (typeof m.content === 'string' && m.content.trim()) {
+
+      // content 已经是多模态数组：原样保留
+      if (Array.isArray(m.content) && m.content.length > 0) {
         return { role, content: m.content };
       }
-      if (Array.isArray(m.content) && m.content.length > 0) {
+
+      // content 是 string，但 message 带图片字段：重新构建多模态结构
+      const hasMedia = m.image;
+      if (hasMedia) {
+        const content: any[] = [];
+        if (typeof m.content === 'string' && m.content.trim()) {
+          content.push({ type: 'text', text: m.content });
+        }
+        if (m.image) {
+          content.push({ type: 'image_url', image_url: { url: m.image } });
+        }
+        if (content.length > 0) {
+          return { role, content };
+        }
+      }
+
+      // 纯文本消息
+      if (typeof m.content === 'string' && m.content.trim()) {
         return { role, content: m.content };
       }
       return null;
@@ -388,6 +409,32 @@ export const api = {
       }),
     });
 
+    // 调试日志：首条请求体，验证多模态结构是否正确
+    try {
+      const debugBody = JSON.parse(JSON.stringify({
+        model: args.model,
+        messages: sanitizeMessages(JSON.parse(args.history || "[]")).concat([buildUserContent(args)]),
+      }));
+      const lastUser = debugBody.messages[debugBody.messages.length - 1];
+      const hasImageInLast = Array.isArray(lastUser?.content) && lastUser.content.some((p: any) => p.type === 'image_url');
+      const imagePreview = hasImageInLast
+        ? lastUser.content.find((p: any) => p.type === 'image_url')?.image_url?.url?.slice(0, 80) + '...'
+        : '(none)';
+      // 检查历史中是否也有图片消息
+      const historyHasImage = debugBody.messages.slice(0, -1).some((m: any) =>
+        Array.isArray(m?.content) && m.content.some((p: any) => p.type === 'image_url')
+      );
+      console.log('[ChatX] stream request:', JSON.stringify({
+        model: args.model,
+        totalMessages: debugBody.messages.length,
+        lastRole: lastUser?.role,
+        lastContentIsArray: Array.isArray(lastUser?.content),
+        lastHasImage: hasImageInLast,
+        imageUrlPrefix: imagePreview,
+        historyHasImage,
+      }));
+    } catch {}
+
     if (!response.ok) {
       const errText = await response.text();
       throw new Error(friendlyError(response.status, errText));
@@ -448,5 +495,40 @@ export const api = {
       if (idleTimer) clearTimeout(idleTimer);
     }
     if (!aborted) onDone(usage || {});
-  }
+  },
+
+  // 图片生成（OpenAI 兼容 /v1/images/generations）
+  async generateImage(args: any): Promise<{ urls: string[]; error?: string }> {
+    const authHeader = args.token
+      ? (args.token.startsWith('Bearer ') ? args.token : `Bearer ${args.token}`)
+      : '';
+    const base = normalizeEndpoint(args.endpoint || 'https://gate.127110.xyz');
+    const body: any = {
+      model: args.model || 'dall-e-3',
+      prompt: args.prompt,
+      n: args.n || 1,
+      size: args.size || '1024x1024',
+      response_format: 'url',
+    };
+    if (args.quality) body.quality = args.quality;
+    if (args.style) body.style = args.style;
+
+    const response = await fetch(`${base}/v1/images/generations`, {
+      method: 'POST',
+      headers: {
+        'Authorization': authHeader,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return { urls: [], error: friendlyError(response.status, errText) };
+    }
+
+    const json = await response.json();
+    const urls: string[] = (json?.data || []).map((d: any) => d.url).filter(Boolean);
+    return { urls };
+  },
 };

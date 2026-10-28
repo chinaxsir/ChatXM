@@ -92,6 +92,12 @@ export default function ChatScreen() {
   const [showHistory, setShowHistory] = useState(false);
   const [showModel, setShowModel] = useState(false);
   const [showImageSrc, setShowImageSrc] = useState(false);
+  const [showDrawPanel, setShowDrawPanel] = useState(false);
+  const [drawPrompt, setDrawPrompt] = useState('');
+  const [drawSize, setDrawSize] = useState('1024x1024');
+  const [drawN, setDrawN] = useState(1);
+  const [drawing, setDrawing] = useState(false);
+  const [drawResult, setDrawResult] = useState<{ urls: string[]; error?: string } | null>(null);
   const [actionIdx, setActionIdx] = useState<number | null>(null);
   const [searchKw, setSearchKw] = useState('');
   // 端侧语音识别模式（expo-speech-recognition，完全调用系统原生识别，不经过API）
@@ -545,6 +551,46 @@ export default function ChatScreen() {
 
   const stopStreaming = () => { if (abortRef.current) abortRef.current.abort(); };
 
+  // ===== 图片生成（/v1/images/generations）=====
+  const drawImage = async () => {
+    if (!drawPrompt.trim() || drawing) return;
+    setDrawing(true);
+    setDrawResult(null);
+    const target = resolveTarget();
+    try {
+      const { urls, error } = await api.generateImage({
+        endpoint: target.endpoint,
+        token: target.token,
+        model: 'gemini',
+        prompt: drawPrompt.trim(),
+        n: drawN,
+        size: drawSize,
+      });
+      if (error) {
+        setDrawResult({ urls: [], error });
+        Alert.alert('图片生成失败', error);
+      } else if (urls.length === 0) {
+        setDrawResult({ urls: [], error: '未返回图片' });
+      } else {
+        setDrawResult({ urls });
+        // 把生成的图片和 prompt 作为消息追加到对话
+        const userMsg: Msg = { role: 'user', content: `🎨 生成图片：${drawPrompt.trim()}`, displayContent: `🎨 生成图片：${drawPrompt.trim()}` };
+        const aiContent = urls.map(u => `![生成图](${u})`).join('\n');
+        const aiMsg: Msg = { role: 'assistant', content: aiContent };
+        const newMessages = [...messages, userMsg, aiMsg];
+        setMessages(newMessages);
+        await api.saveHistory(sessionId, newMessages);
+        setShowDrawPanel(false);
+        setDrawPrompt('');
+      }
+    } catch (e: any) {
+      Alert.alert('图片生成失败', e?.message || '未知错误');
+      setDrawResult({ urls: [], error: e?.message });
+    } finally {
+      setDrawing(false);
+    }
+  };
+
   const closeAction = () => setActionIdx(null);
   const copyMsg = async () => {
     if (actionIdx == null) return;
@@ -952,8 +998,15 @@ export default function ChatScreen() {
           </View>
         )}
 
-        {/* 输入区：图片 | 附件 | 输入框 | 麦克风/发送/停止 */}
+        {/* 输入区：图片生成 | 图片 | 附件 | 输入框 | 麦克风/发送/停止 */}
         <View style={[styles.inputBar, { backgroundColor: C.headerBg, borderTopColor: C.border }]}>
+          <Pressable
+            style={({ pressed }) => [styles.iconCircle, { backgroundColor: C.btnBg }, pressed && { opacity: 0.5 }]}
+            onPress={() => { setShowDrawPanel(true); setDrawResult(null); }}
+            hitSlop={8}
+          >
+            <Ionicons name="brush-outline" size={22} color={C.btnText} />
+          </Pressable>
           <Pressable
             style={({ pressed }) => [styles.iconCircle, { backgroundColor: C.btnBg }, pressed && { opacity: 0.5 }]}
             onPress={onPressImage}
@@ -1241,6 +1294,104 @@ export default function ChatScreen() {
         </View>
       </Modal>
 
+      {/* 图片生成面板 */}
+      <Modal visible={showDrawPanel} animationType="slide" transparent onRequestClose={() => setShowDrawPanel(false)}>
+        <View style={styles.modalMask}>
+          <Pressable style={{ flex: 1 }} onPress={() => !drawing && setShowDrawPanel(false)} />
+          <View style={[styles.drawPanel, { backgroundColor: C.panelBg }]}>
+            {/* 内部拦截层，防止面板内点击冒泡 */}
+            <Pressable style={{ flex: 1 }} onPress={() => {}}>
+              <View style={[styles.drawPanelHandle, { backgroundColor: C.border }]} />
+              <View style={styles.drawHeader}>
+                <Ionicons name="brush" size={22} color={C.accent} />
+                <ThemedText type="subtitle" style={{ flex: 1, marginLeft: 8 }}>图片生成</ThemedText>
+                <TouchableOpacity onPress={() => !drawing && setShowDrawPanel(false)}>
+                  <Ionicons name="close" size={22} color={C.sub} />
+                </TouchableOpacity>
+              </View>
+
+              <View style={[styles.drawBody]}>
+                <ThemedText style={[styles.drawLabel, { color: C.sub }]}>描述你想要的图片</ThemedText>
+                <TextInput
+                  style={[styles.drawInput, { backgroundColor: C.inputBg, color: C.aiText, borderColor: C.border }]}
+                  value={drawPrompt}
+                  onChangeText={setDrawPrompt}
+                  placeholder="例如：一只戴墨镜的橘猫坐在沙发上"
+                  placeholderTextColor={C.sub}
+                  multiline
+                  editable={!drawing}
+                />
+
+                <View style={styles.drawRow}>
+                  <ThemedText style={[styles.drawLabel, { color: C.sub }]}>尺寸</ThemedText>
+                  <View style={styles.drawChips}>
+                    {['1024x1024', '1024x1536', '1536x1024'].map(s => (
+                      <TouchableOpacity key={s}
+                        style={[styles.drawChip, { backgroundColor: drawSize === s ? C.accent : C.inputBg, borderColor: drawSize === s ? C.accent : C.border }]}
+                        onPress={() => setDrawSize(s)}
+                        disabled={drawing}
+                      >
+                        <Text style={{ color: drawSize === s ? '#FFF' : C.btnText, fontSize: 13 }}>{s}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+
+                <View style={styles.drawRow}>
+                  <ThemedText style={[styles.drawLabel, { color: C.sub }]}>数量</ThemedText>
+                  <View style={styles.drawChips}>
+                    {[1, 2, 4].map(n => (
+                      <TouchableOpacity key={n}
+                        style={[styles.drawChip, { backgroundColor: drawN === n ? C.accent : C.inputBg, borderColor: drawN === n ? C.accent : C.border }]}
+                        onPress={() => setDrawN(n)}
+                        disabled={drawing}
+                      >
+                        <Text style={{ color: drawN === n ? '#FFF' : C.btnText, fontSize: 13 }}>{n}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+
+                {/* 生成结果预览 */}
+                {drawResult?.urls && drawResult.urls.length > 0 && (
+                  <View style={styles.drawResultGrid}>
+                    {drawResult.urls.map((u, i) => (
+                      <View key={i} style={[styles.drawResultCard, { backgroundColor: C.inputBg }]}>
+                        <Image source={{ uri: u }} style={styles.drawResultImg} />
+                      </View>
+                    ))}
+                  </View>
+                )}
+                {drawResult?.error && (
+                  <Text style={{ color: C.danger, textAlign: 'center', marginTop: 8 }}>{drawResult.error}</Text>
+                )}
+              </View>
+
+              <View style={[styles.drawFooter, { borderTopColor: C.border }]}>
+                <TouchableOpacity
+                  style={[styles.drawBtn, { backgroundColor: C.inputBg, borderColor: C.border }]}
+                  onPress={() => !drawing && setShowDrawPanel(false)}
+                  disabled={drawing}
+                >
+                  <Text style={{ color: C.btnText }}>取消</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.drawBtn, { backgroundColor: drawPrompt.trim() && !drawing ? C.accent : C.inputBg }]}
+                  onPress={drawImage}
+                  disabled={!drawPrompt.trim() || drawing}
+                >
+                  {drawing ? (
+                    <Text style={{ color: C.btnText }}>生成中...</Text>
+                  ) : (
+                    <Text style={{ color: '#FFF' }}>🎨 生成图片</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
       {/* 消息操作 ActionSheet */}
       <Modal visible={actionIdx != null} animationType="fade" transparent onRequestClose={closeAction}>
         <View style={styles.modalMask}>
@@ -1310,6 +1461,22 @@ const styles = StyleSheet.create({
   actionCircle: { width: 42, height: 42, borderRadius: 21, justifyContent: 'center', alignItems: 'center', marginBottom: 1 },
   input: { flex: 1, minHeight: 42, maxHeight: 100, borderRadius: 21, paddingHorizontal: 15, paddingTop: 10, paddingBottom: 10, fontSize: 16 },
   modalMask: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  // 图片生成面板
+  drawPanel: { borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingTop: 8, maxHeight: '80%' },
+  drawPanelHandle: { width: 40, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: 8 },
+  drawHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth },
+  drawBody: { paddingHorizontal: 16, paddingVertical: 12 },
+  drawLabel: { fontSize: 13, marginBottom: 6 },
+  drawInput: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, minHeight: 80, fontSize: 15, marginBottom: 16 },
+  drawRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 8 },
+  drawChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  drawChip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, borderWidth: 1 },
+  drawResultGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  drawResultCard: { borderRadius: 12, overflow: 'hidden', aspectRatio: 1, width: '48%' },
+  drawResultImg: { width: '100%', height: '100%' },
+  drawFooter: { flexDirection: 'row', gap: 12, paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: StyleSheet.hairlineWidth },
+  drawBtn: { flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: 'center', borderWidth: StyleSheet.hairlineWidth },
+
   actionSheet: { borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 8 },
   actionItem: { padding: 16, borderBottomWidth: StyleSheet.hairlineWidth, alignItems: 'center' },
   bottomPanel: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, paddingBottom: 28, maxHeight: '70%' },

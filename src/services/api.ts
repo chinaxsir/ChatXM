@@ -84,39 +84,65 @@ function buildUserContent(args: any): any {
 
 // 清洗本地历史消息：仅保留 OpenAI 协议要求的 role/content，
 // 剥离 displayContent/fileName/audio 等 UI 字段与空消息，避免接口 400。
-// 关键：历史中用户发过图片时，必须把 image 字段重新合并进 content 数组，
-// 否则模型在多轮对话中看不到之前发过的图片。
+// 图片上下文：只把「最近 1 条」带图的历史消息还原为多模态结构。
+// 若每条历史图片都重传，请求体随轮次线性膨胀（每张 base64 数百 KB），
+// 会触发 iOS fetch 崩溃 / 网关拒绝，反而让图片对话整体不可用。
+const HISTORY_IMAGE_LIMIT = 1;
+
+function messageHasImage(m: any): boolean {
+  if (Array.isArray(m?.content)) return m.content.some((p: any) => p?.type === 'image_url');
+  return !!m?.image;
+}
+
 function sanitizeMessages(raw: any[]): any[] {
-  return (Array.isArray(raw) ? raw : [])
-    .map((m: any) => {
+  const list = Array.isArray(raw) ? raw : [];
+
+  // 倒序分配图片额度：保证保留的是「最近发的那张图」
+  const keepImageAt = new Set<number>();
+  let quota = HISTORY_IMAGE_LIMIT;
+  for (let i = list.length - 1; i >= 0 && quota > 0; i--) {
+    if (messageHasImage(list[i])) {
+      keepImageAt.add(i);
+      quota -= 1;
+    }
+  }
+
+  return list
+    .map((m: any, idx: number) => {
       if (!m) return null;
       const role = m.role === 'assistant' ? 'assistant' : 'user';
+      const keepImage = keepImageAt.has(idx);
 
-      // content 已经是多模态数组：原样保留
+      // content 已经是多模态数组
       if (Array.isArray(m.content) && m.content.length > 0) {
-        return { role, content: m.content };
+        if (keepImage) return { role, content: m.content };
+        // 超出额度的历史图片剔除，只留文本部分
+        const textOnly = m.content
+          .filter((p: any) => p?.type === 'text')
+          .map((p: any) => p?.text || '')
+          .join('\n');
+        return textOnly.trim() ? { role, content: textOnly } : null;
       }
 
-      // content 是 string，但 message 带图片字段：重新构建多模态结构
-      const hasMedia = m.image;
-      if (hasMedia) {
-        const content: any[] = [];
-        if (typeof m.content === 'string' && m.content.trim()) {
-          content.push({ type: 'text', text: m.content });
-        }
-        if (m.image) {
+      // content 是 string，但消息带图片字段
+      if (m.image) {
+        if (keepImage) {
+          const content: any[] = [];
+          if (typeof m.content === 'string' && m.content.trim()) {
+            content.push({ type: 'text', text: m.content });
+          }
           content.push({ type: 'image_url', image_url: { url: m.image } });
-        }
-        if (content.length > 0) {
           return { role, content };
         }
+        return typeof m.content === 'string' && m.content.trim()
+          ? { role, content: m.content }
+          : null;
       }
 
       // 纯文本消息
-      if (typeof m.content === 'string' && m.content.trim()) {
-        return { role, content: m.content };
-      }
-      return null;
+      return typeof m.content === 'string' && m.content.trim()
+        ? { role, content: m.content }
+        : null;
     })
     .filter(Boolean);
 }

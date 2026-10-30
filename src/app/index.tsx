@@ -8,6 +8,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
 import { ThemedText } from '@/components/themed-text';
 import { ModelIcon } from '@/components/model-icon';
+import { BrandLogo } from '@/components/brand-logo';
 import { MarkdownSafe } from '@/components/markdown-safe';
 import { APP_NAME, AI_DISCLAIMER } from '@/constants/brand';
 import { AppPalette } from '@/constants/design';
@@ -1003,7 +1004,10 @@ export default function ChatScreen() {
         {messages.length === 0 ? (
           <View style={styles.emptyState}>
             <View style={[styles.emptyLogo, { backgroundColor: C.accent }]}>
-              <Text style={styles.emptyLogoText}>CX</Text>
+              <BrandLogo
+                size={46}
+                mark={scheme === 'dark' ? ['#0A84FF', '#004C9E'] : ['#007AFF', '#0040A8']}
+              />
             </View>
             <ThemedText style={[styles.emptyTitle, { color: C.btnText }]}>你好，我是 Chat X</ThemedText>
             <ThemedText style={[styles.emptySubtitle, { color: C.sub }]}>智能问答 · 文案创作 · 图片生成</ThemedText>
@@ -1559,7 +1563,6 @@ const styles = StyleSheet.create({
   emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, paddingHorizontal: 24 },
   emptyNote: { fontSize: 11, marginTop: 18, opacity: 0.9 },
   emptyLogo: { width: 72, height: 72, borderRadius: 36, alignItems: 'center', justifyContent: 'center', marginTop: -20, elevation: 4, shadowColor: '#007AFF', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 8 },
-  emptyLogoText: { color: '#FFF', fontSize: 21, fontWeight: '800', letterSpacing: 2 },
   emptyTitle: { fontSize: 18, fontWeight: '600', marginTop: 8 },
   emptySubtitle: { fontSize: 13 },
   emptyChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 16 },

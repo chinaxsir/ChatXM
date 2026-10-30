@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { useThemeMode } from '@/hooks/useThemeMode';
 import { ThemedText } from '@/components/themed-text';
 import { LegalSheet } from '@/components/legal-sheet';
+import { BrandLogo } from '@/components/brand-logo';
 import { AppPalette } from '@/constants/design';
 import { APP_NAME, APP_VERSION, LOGIN_URL, REGISTER_URL, LegalKind } from '@/constants/brand';
 import { api } from '@/services/api';
@@ -16,7 +17,6 @@ const palettes = {
     inputBg: '#F5F6F8', inputText: AppPalette.light.text,
     ring: 'rgba(0,122,255,0.35)', eye: '#8E8E93',
     cardShadow: 'rgba(0,0,0,0.06)', cardBorder: 'rgba(0,0,0,0.04)',
-    logoText1: '#FFFFFF', logoText2: '#FFFFFF',
     formCardBg: '#FFFFFF',
   },
   dark: {
@@ -25,7 +25,6 @@ const palettes = {
     inputText: AppPalette.dark.text,
     ring: 'rgba(10,132,255,0.4)', eye: '#8E8E93',
     cardShadow: 'rgba(0,0,0,0.4)', cardBorder: 'rgba(255,255,255,0.06)',
-    logoText1: '#FFFFFF', logoText2: '#FFFFFF',
     formCardBg: '#1C1C1E',
   },
 };
@@ -221,7 +220,10 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
                     elevation: 6,
                   }]}
                 >
-                  <Text style={styles.logoText}>CX</Text>
+                  <BrandLogo
+                    size={50}
+                    mark={scheme === 'dark' ? ['#0A84FF', '#004C9E'] : ['#007AFF', '#0040A8']}
+                  />
                 </LinearGradient>
               </View>
               <Text style={[styles.title, { color: C.inputText }]}>Chat X</Text>
@@ -353,7 +355,6 @@ const styles = StyleSheet.create({
     width: 76, height: 76, borderRadius: 38,
     alignItems: 'center', justifyContent: 'center',
   },
-  logoText: { color: '#FFF', fontSize: 28, fontWeight: '800', letterSpacing: 2 },
   title: { fontSize: 28, fontWeight: '800', marginBottom: 6, letterSpacing: 0.8 },
   subtitle: { fontSize: 13, fontWeight: '500' },
 

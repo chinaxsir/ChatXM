@@ -8,7 +8,6 @@
     "scheme": "chatxm",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon",
       "bundleIdentifier": "com.xsircn.chatxm",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,

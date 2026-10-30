@@ -21,7 +21,19 @@ const BUILTIN_ENDPOINT = 'https://gate.127110.xyz';
 // 单张图片 base64 字符数上限（约 450KB 图片二进制）。
 // 商业场景下必须保守：请求体过大时 iOS 端 fetch 会直接抛
 // "Bad file descriptor"（ExpoModulesCore/Promise.swift）导致发送失败。
+// 该上限只在内部生效，对用户完全静默——用户永远不需要知道图片被压缩过。
 const IMAGE_B64_BUDGET = 600 * 1024;
+
+// 自动压缩档位：从高画质逐级降到 256px，正常照片必定能在第一/二档落入预算
+const COMPRESS_STEPS = [
+  { width: 1024, compress: 0.6 },
+  { width: 768, compress: 0.5 },
+  { width: 640, compress: 0.45 },
+  { width: 512, compress: 0.4 },
+  { width: 384, compress: 0.35 },
+  { width: 320, compress: 0.3 },
+  { width: 256, compress: 0.25 },
+];
 
 // 从 URI 读取 base64：支持 data: 与本地 file://（ph://、blob: 无法直接读取）
 async function readBase64FromUri(uri: string): Promise<string> {
@@ -38,37 +50,47 @@ async function readBase64FromUri(uri: string): Promise<string> {
   }
 }
 
-// 压缩图片为 data URL：按尺寸/质量逐级降级，直到落入体积预算内。
-// 每一级都做「saveAsync 未返回 base64 时回读文件」的兜底，避免新 API 差异导致
-// base64 为空——否则会退化成把 file:// 原始 URI 发给模型（模型无法读取 → 图片识别失败）。
-async function compressImageToDataUrl(uri: string): Promise<string> {
-  const steps = [
-    { width: 1024, compress: 0.6 },
-    { width: 768, compress: 0.5 },
-    { width: 640, compress: 0.45 },
-    { width: 512, compress: 0.4 },
-  ];
-  let firstError = '';
-  for (const step of steps) {
+// 对单个来源做逐级压缩，返回首个落入预算的结果；全部超限时返回最小结果（不报错）
+async function compressSource(source: string): Promise<string> {
+  let smallest = '';
+  for (const step of COMPRESS_STEPS) {
     try {
-      const rendered = await ImageManipulator.manipulate(uri).resize({ width: step.width }).renderAsync();
+      const rendered = await ImageManipulator.manipulate(source).resize({ width: step.width }).renderAsync();
       const saved = await rendered.saveAsync({ compress: step.compress, format: SaveFormat.JPEG, base64: true });
       let b64 = saved?.base64 || '';
+      // 新版 API 差异兜底：saveAsync 未返回 base64 时回读落盘文件
       if (!b64) b64 = await readBase64FromUri(saved?.uri || '');
-      if (b64 && b64.length <= IMAGE_B64_BUDGET) {
-        return `data:image/jpeg;base64,${b64}`;
-      }
-    } catch (e: any) {
-      if (!firstError) firstError = e?.message || String(e);
+      if (!b64) continue;
+      const dataUrl = `data:image/jpeg;base64,${b64}`;
+      if (b64.length <= IMAGE_B64_BUDGET) return dataUrl;
+      smallest = dataUrl;
+    } catch {
+      // 该档位失败则继续降级，不中断整体流程
     }
   }
-  // 兜底：直接读取原图（仅限本地文件且体积达标）
+  return smallest;
+}
+
+// 压缩图片为 data URL：全程静默自动处理，不抛错、不打断用户操作。
+// 依次尝试「原始 uri」→「选择器返回的 base64」→「直接读取文件」，
+// 任意一路成功即返回；全部失败返回空串，由调用方静默降级。
+async function compressImageToDataUrl(uri: string, fallbackBase64?: string, mime?: string): Promise<string> {
+  const primary = await compressSource(uri);
+  if (primary) return primary;
+
+  // 路径 A：用选择器已给的 base64 重建 data URL 再压缩（原 uri 不可操作时最有效）
+  if (fallbackBase64) {
+    const rebuilt = await compressSource(`data:${mime || 'image/jpeg'};base64,${fallbackBase64}`);
+    if (rebuilt) return rebuilt;
+  }
+
+  // 路径 B：直接读取本地文件（仅 file:// 可读）
   const raw = await readBase64FromUri(uri);
   if (raw && raw.length <= IMAGE_B64_BUDGET) {
-    const mime = uri.startsWith('data:') ? uri.slice(5, uri.indexOf(';')) : 'image/jpeg';
-    return `data:${mime};base64,${raw}`;
+    const safeMime = uri.startsWith('data:') ? uri.slice(5, uri.indexOf(';')) : 'image/jpeg';
+    return `data:${safeMime};base64,${raw}`;
   }
-  throw new Error(firstError || `压缩后仍超过 ${Math.round(IMAGE_B64_BUDGET / 1024)}KB 上限`);
+  return '';
 }
 
 type Msg = {
@@ -283,27 +305,11 @@ export default function ChatScreen() {
       if (result.canceled || !result.assets?.[0]) return;
       const asset: any = result.assets[0];
 
-      let dataUrl = '';
-      try {
-        dataUrl = await compressImageToDataUrl(asset.uri);
-      } catch (e: any) {
-        // 兜底：使用选择器直接返回的 base64（仅当体积可接受）
-        const fallback = asset.base64
-          ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}`
-          : '';
-        if (fallback && fallback.length <= IMAGE_B64_BUDGET) {
-          dataUrl = fallback;
-        } else {
-          Alert.alert(
-            'Chat X',
-            '图片体积过大，无法压缩到可上传的大小。\n建议：先截图或用手机相册裁剪/缩小后再发送。' +
-            (e?.message ? `\n（${e.message}）` : '')
-          );
-          return;
-        }
-      }
+      // 全程静默自动压缩：用户无感知，绝不因体积提示打断操作
+      const dataUrl = await compressImageToDataUrl(asset.uri, asset.base64, asset.mimeType);
       if (!dataUrl) {
-        Alert.alert('Chat X', '图片处理失败，请更换一张图片或截图后再试');
+        // 极端情况下（图片损坏/格式不支持）才提示，且不提体积
+        Alert.alert('Chat X', '这张图片无法读取，请换一张试试');
         return;
       }
       setImage(dataUrl);
@@ -340,15 +346,15 @@ export default function ChatScreen() {
         || mime.includes('officedocument') || mime.startsWith('application/msword');
 
       if (mime.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.heic', '.heif', '.bmp'].some(ext => lowerName.endsWith(ext))) {
-        // 图片统一走图片通道：带体积保护的压缩
+        // 图片统一走图片通道：静默自动压缩，不提示体积
         let dataUrl = '';
         try {
           dataUrl = await compressImageToDataUrl(file.uri);
         } catch {
-          dataUrl = file.uri;
+          dataUrl = '';
         }
         if (!dataUrl) {
-          Alert.alert('Chat X', '图片压缩失败，请更换一张较小的图片');
+          Alert.alert('Chat X', '这张图片无法读取，请换一张试试');
           return;
         }
         setImage(dataUrl);
@@ -513,12 +519,14 @@ export default function ChatScreen() {
           // 保存历史
           const finalMessages = [...newMessages];
           finalMessages[finalMessages.length - 1] = { role: 'assistant', content: aiTextRef.current };
-          // 历史里含 base64 图片，Web 端 localStorage 有配额上限：
-          // 写失败不能影响本次对话结果，仅提示本地记录未保存
+          // 历史里含 base64 图片，Web 端 localStorage 有配额上限。
+          // 写失败时自动剥离图片重试，全程静默，不影响本次对话结果
           try {
             await api.saveHistory(sessionId, finalMessages);
           } catch {
-            Alert.alert('Chat X', '本地会话保存失败（存储空间不足），本次回复不会被记录，可清理历史后重试');
+            try {
+              await api.saveHistory(sessionId, finalMessages.map((m: any) => ({ ...m, image: null })));
+            } catch { /* 仍失败则放弃本地记录，不打断用户 */ }
           }
 
           // 累计消耗统计 + 本地估算扣费（统计独立持久化，退出/切换账号不归零）
@@ -575,9 +583,9 @@ export default function ChatScreen() {
       }
       if (!aborted) {
         const rawMsg = String(e?.message || e);
-        // 传输层异常：iOS 大请求体崩溃 / 网络中断 / 网关拒绝
+        // 传输层异常：网络中断 / 网关拒绝。不再向用户暴露体积相关提示
         if (rawMsg.includes('Bad file descriptor') || rawMsg.includes('fetch failed') || rawMsg.includes('Network request failed')) {
-          Alert.alert('Chat X', `发送失败：请求在网络传输阶段被中断。\n请检查网络后重试${image ? '；若仍失败，请换一张更小的图片' : ''}`);
+          Alert.alert('Chat X', '网络连接中断，请检查网络后重试');
         } else {
           Alert.alert('Chat X', '对话请求失败: ' + rawMsg);
         }

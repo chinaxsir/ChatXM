@@ -4,6 +4,8 @@ import * as Clipboard from 'expo-clipboard';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { useThemeMode, ThemeMode } from '@/hooks/useThemeMode';
 import { ThemedText } from '@/components/themed-text';
+import { LegalSheet } from '@/components/legal-sheet';
+import { APP_NAME, APP_VERSION, AI_DISCLAIMER, OFFICIAL_SITE, OFFICIAL_SHOP, SUPPORT_WECHAT, LegalKind } from '@/constants/brand';
 import { api } from '@/services/api';
 
 // 和 api.ts 中 normalizeEndpoint 保持一致的前端版本，用于输入时即时预览
@@ -63,6 +65,7 @@ export default function SettingsScreen() {
   const [testingApi, setTestingApi] = useState<'idle' | 'loading' | 'success' | 'fail'>('idle');
   const [testMsg, setTestMsg] = useState('');
   const [testModels, setTestModels] = useState<string[]>([]);
+  const [legalKind, setLegalKind] = useState<LegalKind | null>(null);
   const router = useRouter();
 
   // 即时预览清洗后的 endpoint
@@ -507,6 +510,52 @@ export default function SettingsScreen() {
         </View>
       </View>
 
+      {/* 关于与支持：商业化必备的信息入口（协议、客服、版本、免责说明） */}
+      <View style={[styles.card, { backgroundColor: C.card, borderColor: C.border, padding: 0, overflow: 'hidden' }]}>
+        <View style={{ paddingHorizontal: 14, paddingTop: 14 }}>
+          <ThemedText style={styles.sectionTitle}>ℹ️ 关于与支持</ThemedText>
+        </View>
+
+        {[
+          { icon: '📄', label: '用户服务协议', onPress: () => setLegalKind('terms') },
+          { icon: '🔒', label: '隐私政策', onPress: () => setLegalKind('privacy') },
+          { icon: '🌐', label: '官方网站', onPress: () => Linking.openURL(OFFICIAL_SITE) },
+          {
+            icon: '💬', label: '联系客服',
+            onPress: async () => { await Clipboard.setStringAsync(SUPPORT_WECHAT); Alert.alert(APP_NAME, `客服微信 ${SUPPORT_WECHAT} 已复制`); },
+          },
+        ].map((it, i, arr) => (
+          <TouchableOpacity
+            key={it.label}
+            onPress={it.onPress}
+            activeOpacity={0.6}
+            style={[styles.linkRow, { borderBottomColor: C.border, borderBottomWidth: i === arr.length - 1 ? 0 : StyleSheet.hairlineWidth }]}
+          >
+            <Text style={styles.linkIcon}>{it.icon}</Text>
+            <ThemedText style={{ flex: 1, fontSize: 14 }}>{it.label}</ThemedText>
+            <Text style={{ color: C.sub, fontSize: 16 }}>›</Text>
+          </TouchableOpacity>
+        ))}
+
+        {/* 免责说明 + 版本号：商业 APP 的法务必要元素 */}
+        <View style={[styles.aboutFooter, { backgroundColor: C.bg, borderTopColor: C.border }]}>
+          <ThemedText style={[styles.hint, { color: C.sub, textAlign: 'center', lineHeight: 18 }]}>
+            {AI_DISCLAIMER}
+          </ThemedText>
+          <ThemedText style={[styles.hint, { color: C.sub, textAlign: 'center', marginTop: 6 }]}>
+            {APP_NAME} v{APP_VERSION}
+          </ThemedText>
+        </View>
+      </View>
+
+      {/* 协议 / 隐私条款弹层 */}
+      <LegalSheet
+        kind={legalKind}
+        visible={legalKind !== null}
+        onClose={() => setLegalKind(null)}
+        colors={{ bg: C.card, panel: C.panel, border: C.border, sub: C.sub, text: C.cancelText, accent: C.accent, mask: C.mask }}
+      />
+
       {/* 充值弹窗 */}
       <Modal visible={showRecharge} animationType="slide" transparent>
         <View style={[styles.modalMask, { backgroundColor: C.mask }]}>
@@ -520,15 +569,15 @@ export default function SettingsScreen() {
               onChangeText={setVoucher}
             />
             <View style={styles.buyRow}>
-              <TouchableOpacity onPress={() => Linking.openURL('https://m.tb.cn/h.8IHpiRW?tk=5yN3TjFuZ3R')} style={[styles.buyOption, { backgroundColor: C.bg, borderColor: C.border }]}>
+              <TouchableOpacity onPress={() => Linking.openURL(OFFICIAL_SHOP)} style={[styles.buyOption, { backgroundColor: C.bg, borderColor: C.border }]}>
                 <ThemedText style={[styles.buyIcon, { color: C.accent }]}>🛒</ThemedText>
                 <ThemedText style={styles.buyLabel}>购买卡密</ThemedText>
                 <ThemedText style={[styles.buyHint, { color: C.sub }]}>官方店铺</ThemedText>
               </TouchableOpacity>
-              <TouchableOpacity onPress={async () => { await Clipboard.setStringAsync('xsirchats'); Alert.alert('已复制', '微信号 xsirchats 已复制到剪贴板，请打开微信添加好友'); }} style={[styles.buyOption, { backgroundColor: C.bg, borderColor: C.border }]}>
+              <TouchableOpacity onPress={async () => { await Clipboard.setStringAsync(SUPPORT_WECHAT); Alert.alert(APP_NAME, '微信号 ' + SUPPORT_WECHAT + ' 已复制到剪贴板，请打开微信添加好友'); }} style={[styles.buyOption, { backgroundColor: C.bg, borderColor: C.border }]}>
                 <ThemedText style={[styles.buyIcon, { color: '#07C160' }]}>💬</ThemedText>
                 <ThemedText style={styles.buyLabel}>联系微信</ThemedText>
-                <ThemedText style={[styles.buyHint, { color: C.sub }]}>xsirchats</ThemedText>
+                <ThemedText style={[styles.buyHint, { color: C.sub }]}>{SUPPORT_WECHAT}</ThemedText>
               </TouchableOpacity>
             </View>
             <View style={styles.modalBtns}>
@@ -852,4 +901,9 @@ const styles = StyleSheet.create({
 
   apiModelChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 },
   apiChip: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, maxWidth: 140 },
+
+  // ===== 关于与支持 =====
+  linkRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 13, marginTop: 2 },
+  linkIcon: { fontSize: 15, width: 20, textAlign: 'center' },
+  aboutFooter: { paddingVertical: 14, paddingHorizontal: 16, borderTopWidth: StyleSheet.hairlineWidth, marginTop: 4 },
 });

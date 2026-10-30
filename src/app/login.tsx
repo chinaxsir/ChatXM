@@ -4,6 +4,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { useThemeMode } from '@/hooks/useThemeMode';
 import { ThemedText } from '@/components/themed-text';
+import { LegalSheet } from '@/components/legal-sheet';
+import { APP_NAME, APP_VERSION, LOGIN_URL, REGISTER_URL, LegalKind } from '@/constants/brand';
 import { api } from '@/services/api';
 
 const palettes = {
@@ -35,6 +37,9 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
   const [loading, setLoading] = useState(false);
   const [showPwd, setShowPwd] = useState(false);
   const [focusField, setFocusField] = useState<string | null>(null);
+  // 商业合规：必须主动勾选协议才能登录，默认不勾选
+  const [agreed, setAgreed] = useState(false);
+  const [legalKind, setLegalKind] = useState<LegalKind | null>(null);
   const router = useRouter();
   const finish = onLoginSuccess ?? (() => router.replace('/'));
 
@@ -73,15 +78,22 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
     }
   }, [focusField, focusScale]);
 
+  // LegalSheet 需要的中性色板映射
+  const legalColors = {
+    bg: C.card, panel: C.card, border: C.border, sub: C.sub,
+    text: C.inputText, accent: C.accent, mask: 'rgba(0,0,0,0.45)',
+  };
+
   const handleLogin = async () => {
-    if (!username.trim() || !password.trim()) { Alert.alert('Chat X', '请输入邮箱和密码'); return; }
+    if (!username.trim() || !password.trim()) { Alert.alert(APP_NAME, '请输入邮箱和密码'); return; }
+    if (!agreed) { Alert.alert(APP_NAME, '请先阅读并同意《用户服务协议》和《隐私政策》'); return; }
     setLoading(true);
     try {
       const res = await api.login({ username, password });
       const isSuccess = res?.status === 'success' || res?.code === 200 || res?.success === true || res?.status === 'ok';
       if (!isSuccess) {
         const errMsg = res?.message || res?.data?.message || res?.error?.message || JSON.stringify(res).slice(0, 150);
-        Alert.alert('Chat X', '登录失败: ' + errMsg);
+        Alert.alert(APP_NAME, '登录失败: ' + errMsg);
         return;
       }
 
@@ -122,7 +134,7 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
       await api.saveConfig(finalConfig);
       finish();
     } catch (e: any) {
-      Alert.alert('Chat X', '登录异常: ' + (e?.message || e));
+      Alert.alert(APP_NAME, '登录异常: ' + (e?.message || e));
     } finally {
       setLoading(false);
     }
@@ -237,6 +249,35 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
                 {inputField('pwd', '登录密码', '🔒', true)}
 
                 <TouchableOpacity
+                  onPress={() => Linking.openURL(LOGIN_URL)}
+                  activeOpacity={0.6}
+                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+                  style={styles.forgotRow}
+                >
+                  <Text style={[styles.forgotText, { color: C.sub }]}>忘记密码？</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.consentRow}
+                  onPress={() => setAgreed((v) => !v)}
+                  activeOpacity={0.7}
+                  hitSlop={{ top: 6, bottom: 6, left: 2, right: 2 }}
+                >
+                  <View style={[
+                    styles.checkbox,
+                    { borderColor: agreed ? C.accent : C.border, backgroundColor: agreed ? C.accent : 'transparent' },
+                  ]}>
+                    {agreed && <Text style={styles.checkMark}>✓</Text>}
+                  </View>
+                  <Text style={[styles.consentText, { color: C.sub }]}>
+                    我已阅读并同意
+                    <Text style={{ color: C.accent }} onPress={() => setLegalKind('terms')}>《用户服务协议》</Text>
+                    与
+                    <Text style={{ color: C.accent }} onPress={() => setLegalKind('privacy')}>《隐私政策》</Text>
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
                   style={[
                     styles.loginBtn,
                     {
@@ -272,7 +313,7 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
             <View style={styles.registerRow}>
               <Text style={[styles.registerText, { color: C.sub }]}>还没有账号？</Text>
               <TouchableOpacity
-                onPress={() => Linking.openURL('https://127110.xyz/register')}
+                onPress={() => Linking.openURL(REGISTER_URL)}
                 activeOpacity={0.6}
                 hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
               >
@@ -282,11 +323,18 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
 
             {/* 底部品牌信息 */}
             <View style={styles.footer}>
-              <Text style={[styles.footerText, { color: C.sub }]}>v1.0.0 · © Chat X</Text>
+              <Text style={[styles.footerText, { color: C.sub }]}>v{APP_VERSION} · © {APP_NAME}</Text>
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
+
+      <LegalSheet
+        kind={legalKind}
+        visible={legalKind !== null}
+        onClose={() => setLegalKind(null)}
+        colors={legalColors}
+      />
     </LinearGradient>
   );
 }
@@ -332,6 +380,17 @@ const styles = StyleSheet.create({
   inputIcon: { fontSize: 17, marginRight: 8 },
   input: { fontSize: 15, height: '100%' },
   eyeBtn: { padding: 6 },
+
+  // ===== 忘记密码 / 协议勾选 =====
+  forgotRow: { alignSelf: 'flex-end', marginTop: -2 },
+  forgotText: { fontSize: 12.5 },
+  consentRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 2, paddingRight: 4 },
+  checkbox: {
+    width: 18, height: 18, borderRadius: 9, borderWidth: 1.2,
+    alignItems: 'center', justifyContent: 'center', marginTop: 1,
+  },
+  checkMark: { color: '#FFF', fontSize: 11, fontWeight: '700', lineHeight: 13 },
+  consentText: { flex: 1, fontSize: 11.5, lineHeight: 17 },
 
   // ===== 登录按钮 =====
   loginBtn: {

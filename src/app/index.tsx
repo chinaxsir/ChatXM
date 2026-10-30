@@ -9,6 +9,7 @@ import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
 import { ThemedText } from '@/components/themed-text';
 import { ModelIcon } from '@/components/model-icon';
 import { MarkdownSafe } from '@/components/markdown-safe';
+import { APP_NAME, AI_DISCLAIMER } from '@/constants/brand';
 import { api } from '@/services/api';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
@@ -1001,12 +1002,12 @@ export default function ChatScreen() {
         {messages.length === 0 ? (
           <View style={styles.emptyState}>
             <View style={[styles.emptyLogo, { backgroundColor: C.accent }]}>
-              <Text style={styles.emptyLogoText}>AI</Text>
+              <Text style={styles.emptyLogoText}>CX</Text>
             </View>
             <ThemedText style={[styles.emptyTitle, { color: C.btnText }]}>你好，我是 Chat X</ThemedText>
-            <ThemedText style={[styles.emptySubtitle, { color: C.sub }]}>随时为你提供智能对话服务</ThemedText>
+            <ThemedText style={[styles.emptySubtitle, { color: C.sub }]}>智能问答 · 文案创作 · 图片生成</ThemedText>
             <View style={styles.emptyChips}>
-              {['帮我写一段代码', '解释一下这个概念', '翻译这段话', '帮我润色文案'].map((q) => (
+              {['帮我写一段代码', '解释一下这个概念', '帮我画一只猫', '帮我润色文案'].map((q) => (
                 <TouchableOpacity
                   key={q}
                   style={[styles.emptyChip, { backgroundColor: C.btnBg, borderColor: C.border }]}
@@ -1017,6 +1018,7 @@ export default function ChatScreen() {
                 </TouchableOpacity>
               ))}
             </View>
+            <ThemedText style={[styles.emptyNote, { color: C.sub }]}>{AI_DISCLAIMER}</ThemedText>
           </View>
         ) : (
           <FlatList
@@ -1554,8 +1556,9 @@ const styles = StyleSheet.create({
   segItem: { paddingHorizontal: 12, height: 32, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
   segActiveText: { color: '#FFF', fontSize: 13, fontWeight: '600' },
   emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10, paddingHorizontal: 24 },
+  emptyNote: { fontSize: 11, marginTop: 18, opacity: 0.9 },
   emptyLogo: { width: 72, height: 72, borderRadius: 36, alignItems: 'center', justifyContent: 'center', marginTop: -20, elevation: 4, shadowColor: '#007AFF', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 8 },
-  emptyLogoText: { color: '#FFF', fontSize: 22, fontWeight: '700', letterSpacing: 0.5 },
+  emptyLogoText: { color: '#FFF', fontSize: 21, fontWeight: '800', letterSpacing: 2 },
   emptyTitle: { fontSize: 18, fontWeight: '600', marginTop: 8 },
   emptySubtitle: { fontSize: 13 },
   emptyChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 16 },

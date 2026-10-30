@@ -387,14 +387,24 @@ export default function SettingsScreen() {
             <ThemedText style={[styles.statLabel, { color: C.sub }]}>⚡ 今日</ThemedText>
             <ThemedText style={styles.statValue}>{(todayUsage?.tokens || 0).toLocaleString()}</ThemedText>
             <ThemedText style={[styles.hint, { color: C.sub }]}>{todayUsage?.count || 0} 次</ThemedText>
+            {!!todayUsage?.images && (
+              <ThemedText style={[styles.hint, { color: C.sub }]}>绘图 {todayUsage.images} 张</ThemedText>
+            )}
           </View>
           <View style={[styles.statSep, { backgroundColor: C.border }]} />
           <View style={[styles.statBox]}>
             <ThemedText style={[styles.statLabel, { color: C.sub }]}>📊 累计</ThemedText>
             <ThemedText style={styles.statValue}>{(config.usage?.total || 0).toLocaleString()}</ThemedText>
             <ThemedText style={[styles.hint, { color: C.sub }]}>{config.usage?.count || 0} 次</ThemedText>
+            {!!config.usage?.images && (
+              <ThemedText style={[styles.hint, { color: C.sub }]}>绘图 {config.usage.images} 张</ThemedText>
+            )}
           </View>
         </View>
+
+        <ThemedText style={[styles.hint, styles.drawUsageNote, { color: C.sub }]}>
+          图文均计入消耗：绘图按每张 1500 tokens 等效估算
+        </ThemedText>
 
         {/* 用量明细：近 7 日消耗趋势 */}
         <View style={{ marginTop: 14 }}>
@@ -859,6 +869,7 @@ const styles = StyleSheet.create({
   btnText: { color: '#FFF', fontWeight: '600' },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   hint: { fontSize: 12 },
+  drawUsageNote: { textAlign: 'center', marginTop: 10 },
   emptyCard: { alignItems: 'center', paddingVertical: 20 },
   apiItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, gap: 10 },
   apiDot: { width: 8, height: 8, borderRadius: 4, alignSelf: 'flex-start', marginTop: 6 },

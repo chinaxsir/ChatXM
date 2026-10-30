@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { StyleSheet, View, Text, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, SafeAreaView, Modal, Alert, Image, Pressable, Animated, ScrollView } from 'react-native';
+import { StyleSheet, View, Text, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Keyboard, Platform, SafeAreaView, Modal, Alert, Image, Pressable, Animated, ScrollView } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useThemeMode } from '@/hooks/useThemeMode';
 import * as ImagePicker from 'expo-image-picker';
@@ -20,6 +20,9 @@ import LoginScreen from './login';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 
 const BUILTIN_ENDPOINT = 'https://gate.127110.xyz';
+
+// 单张生成图片在消耗统计中的等效 token 数（仅本地估算，最终以服务端计费为准）
+const IMAGE_TOKEN_EST = 1500;
 
 // 单张图片 base64 字符数上限（约 450KB 图片二进制）。
 // 商业场景下必须保守：请求体过大时 iOS 端 fetch 会直接抛
@@ -146,6 +149,8 @@ export default function ChatScreen() {
   const [drawN, setDrawN] = useState(1);
   const [drawing, setDrawing] = useState(false);
   const [drawResult, setDrawResult] = useState<{ urls: string[]; error?: string } | null>(null);
+  // 绘图面板的键盘高度：Modal 内部拿不到系统 resize，改为监听键盘事件手动上推
+  const [drawKbHeight, setDrawKbHeight] = useState(0);
   const [actionIdx, setActionIdx] = useState<number | null>(null);
   const [searchKw, setSearchKw] = useState('');
   // 端侧语音识别模式（expo-speech-recognition，完全调用系统原生识别，不经过API）
@@ -228,6 +233,17 @@ export default function ChatScreen() {
 
   // 卸载时清理语音计时器
   useEffect(() => () => { if (voiceTimerRef.current) clearInterval(voiceTimerRef.current); }, []);
+
+  // 绘图面板打开期间监听键盘高度（iOS 需要 willShow 才有动画同步感，Android 只有 didShow 可靠）
+  useEffect(() => {
+    if (!showDrawPanel) { setDrawKbHeight(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const s1 = Keyboard.addListener(showEvt, (e) => setDrawKbHeight(e.endCoordinates?.height ?? 0));
+    const s2 = Keyboard.addListener('keyboardDidShow', (e) => setDrawKbHeight(e.endCoordinates?.height ?? 0));
+    const h1 = Keyboard.addListener(hideEvt, () => setDrawKbHeight(0));
+    return () => { s1.remove(); s2.remove(); h1.remove(); };
+  }, [showDrawPanel]);
 
   useFocusEffect(
     useCallback(() => {
@@ -614,6 +630,40 @@ export default function ChatScreen() {
   const stopStreaming = () => { if (abortRef.current) abortRef.current.abort(); };
 
   // ===== 图片生成（/v1/images/generations）=====
+  // 绘图与对话共用同一套本地消耗账本，保证「设置 → 消耗」口径一致
+  const recordDrawUsage = async (count: number) => {
+    if (!count) return;
+    const day = new Date().toISOString().slice(0, 10);
+    const curCfg = configRef.current || config;
+    const u = (await api.loadUsageStats()) || { total: 0, prompt: 0, completion: 0, count: 0, daily: {} as any };
+    const d = u.daily[day] || { tokens: 0, count: 0, images: 0 };
+    const addTokens = IMAGE_TOKEN_EST * count;
+    const newUsage = {
+      ...u,
+      total: (u.total || 0) + addTokens,
+      count: (u.count || 0) + count,
+      images: (u.images || 0) + count,
+      daily: {
+        ...u.daily,
+        [day]: {
+          tokens: (d.tokens || 0) + addTokens,
+          count: (d.count || 0) + count,
+          images: (d.images || 0) + count,
+        },
+      },
+    };
+    await api.saveUsageStats(newUsage);
+    const newConfig = {
+      ...curCfg,
+      balance: curCfg?.balance != null
+        ? Math.max(0, Number(curCfg.balance) - addTokens * 0.000002)
+        : curCfg?.balance,
+      usage: newUsage,
+    };
+    await api.saveConfig(newConfig);
+    applyConfig(newConfig);
+  };
+
   const drawImage = async () => {
     if (!drawPrompt.trim() || drawing) return;
     setDrawing(true);
@@ -642,6 +692,7 @@ export default function ChatScreen() {
         await api.saveHistory(sessionId, newMessages);
         setShowDrawPanel(false);
         setDrawPrompt('');
+        await recordDrawUsage(urls.length);
       }
     } catch (e: any) {
       Alert.alert('图片生成失败', e?.message || '未知错误');
@@ -695,6 +746,7 @@ export default function ChatScreen() {
       };
       setMessages(finalMessages);
       try { await api.saveHistory(sessionId, finalMessages); } catch {}
+      if (urls.length > 0) await recordDrawUsage(urls.length);
     } catch (e: any) {
       const reply = `图片生成失败，请稍后重试。`;
       const finalMessages = [...newMessages];
@@ -1426,11 +1478,12 @@ export default function ChatScreen() {
 
       {/* 图片生成面板 */}
       <Modal visible={showDrawPanel} animationType="slide" transparent onRequestClose={() => setShowDrawPanel(false)}>
-        <View style={styles.modalMask}>
-          <Pressable style={{ flex: 1 }} onPress={() => !drawing && setShowDrawPanel(false)} />
-          <View style={[styles.drawPanel, { backgroundColor: C.panelBg }]}>
-            {/* 面板内容直接随内容撑高：若此处给 flex:1，父级高度未定会被压成 0 高（弹层不可见） */}
-            <Pressable onPress={() => {}}>
+        {/* 键盘避让：Modal 是独立窗口，Android 边到边模式下系统不会 resize，
+            因此按键盘实际高度给整层加下内边距，面板随之浮到键盘上方 */}
+        <View style={{ flex: 1, paddingBottom: drawKbHeight }}>
+          <View style={styles.modalMask}>
+            <Pressable style={{ flex: 1 }} onPress={() => !drawing && setShowDrawPanel(false)} />
+            <View style={[styles.drawPanel, { backgroundColor: C.panelBg }]}>
               <View style={[styles.drawPanelHandle, { backgroundColor: C.border }]} />
               <View style={styles.drawHeader}>
                 <Ionicons name="brush" size={22} color={C.accent} />
@@ -1440,6 +1493,7 @@ export default function ChatScreen() {
                 </TouchableOpacity>
               </View>
 
+              {/* 内容区随内容撑高（不要再套 ScrollView / flex:1，否则原生端会被压成 0 高） */}
               <View style={[styles.drawBody]}>
                 <ThemedText style={[styles.drawLabel, { color: C.sub }]}>描述你想要的图片</ThemedText>
                 <TextInput
@@ -1517,7 +1571,7 @@ export default function ChatScreen() {
                   )}
                 </TouchableOpacity>
               </View>
-            </Pressable>
+            </View>
           </View>
         </View>
       </Modal>

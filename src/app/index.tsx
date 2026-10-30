@@ -10,6 +10,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ModelIcon } from '@/components/model-icon';
 import { MarkdownSafe } from '@/components/markdown-safe';
 import { APP_NAME, AI_DISCLAIMER } from '@/constants/brand';
+import { AppPalette } from '@/constants/design';
 import { api } from '@/services/api';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
@@ -104,8 +105,8 @@ type Msg = {
 };
 
 const palettes = {
-  light: { bg: '#F5F6F8', headerBg: '#FFFFFF', border: '#E5E5EA', sub: '#8E8E93', btnBg: '#F0F2F5', btnText: '#333333', accent: '#007AFF', accentSoft: '#E8F1FF', inputBg: '#F0F0F0', aiBubble: '#E9E9EB', aiText: '#000000', panelBg: '#FFFFFF', danger: '#E53E3E', chip: '#E8F1FF' },
-  dark: { bg: '#000000', headerBg: '#1C1C1E', border: '#2C2C2E', sub: '#8E8E93', btnBg: '#2C2C2E', btnText: '#E5E5EA', accent: '#0A84FF', accentSoft: '#1A3A5C', inputBg: '#1C1C1E', aiBubble: '#2C2C2E', aiText: '#FFFFFF', panelBg: '#1C1C1E', danger: '#FF6B6B', chip: '#1A3A5C' },
+  light: { ...AppPalette.light, inputBg: '#F0F0F0', btnBg: '#F0F2F5' },
+  dark: { ...AppPalette.dark },
 };
 
 export default function ChatScreen() {
@@ -1033,8 +1034,8 @@ export default function ChatScreen() {
                 activeOpacity={0.7}
               >
               <View style={[styles.msgBubble, item.role === 'user'
-                ? { backgroundColor: C.accent, alignSelf: 'flex-end' }
-                : { backgroundColor: C.aiBubble, alignSelf: 'flex-start' }]}>
+                ? { backgroundColor: C.accent, alignSelf: 'flex-end', borderBottomRightRadius: 6 }
+                : { backgroundColor: C.aiBubble, alignSelf: 'flex-start', borderBottomLeftRadius: 6 }]}>
                 {!!item.fileName && (
                   <View style={styles.fileBadge}>
                     <Text style={styles.fileIcon}>📎</Text>
@@ -1565,7 +1566,7 @@ const styles = StyleSheet.create({
   emptyChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 18, borderWidth: StyleSheet.hairlineWidth },
   emptyChipText: { fontSize: 12 },
   listContent: { padding: 16 },
-  msgBubble: { padding: 12, borderRadius: 18, marginVertical: 6, maxWidth: '85%' },
+  msgBubble: { padding: 12, borderRadius: 18, marginVertical: 5, maxWidth: '85%' },
   msgImage: { width: 200, height: 200, borderRadius: 12, marginBottom: 6 },
   msgImagesWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   msgText: { fontSize: 15, lineHeight: 21 },

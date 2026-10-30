@@ -5,23 +5,24 @@ import { useRouter } from 'expo-router';
 import { useThemeMode } from '@/hooks/useThemeMode';
 import { ThemedText } from '@/components/themed-text';
 import { LegalSheet } from '@/components/legal-sheet';
+import { AppPalette } from '@/constants/design';
 import { APP_NAME, APP_VERSION, LOGIN_URL, REGISTER_URL, LegalKind } from '@/constants/brand';
 import { api } from '@/services/api';
 
 const palettes = {
   light: {
+    ...AppPalette.light,
     bgTop: '#F8FAFF', bgBottom: '#EDF2FA',
-    card: '#FFFFFF', border: '#E5E5EA', inputBg: '#F5F6F8',
-    inputText: '#000', sub: '#8E8E93', accent: '#007AFF', accentSoft: '#E8F1FF',
+    inputBg: '#F5F6F8', inputText: AppPalette.light.text,
     ring: 'rgba(0,122,255,0.35)', eye: '#8E8E93',
     cardShadow: 'rgba(0,0,0,0.06)', cardBorder: 'rgba(0,0,0,0.04)',
     logoText1: '#FFFFFF', logoText2: '#FFFFFF',
     formCardBg: '#FFFFFF',
   },
   dark: {
+    ...AppPalette.dark,
     bgTop: '#050510', bgBottom: '#0A0A1A',
-    card: '#1C1C1E', border: '#2C2C2E', inputBg: '#2C2C2E',
-    inputText: '#FFF', sub: '#8E8E93', accent: '#0A84FF', accentSoft: '#1A3A5C',
+    inputText: AppPalette.dark.text,
     ring: 'rgba(10,132,255,0.4)', eye: '#8E8E93',
     cardShadow: 'rgba(0,0,0,0.4)', cardBorder: 'rgba(255,255,255,0.06)',
     logoText1: '#FFFFFF', logoText2: '#FFFFFF',
@@ -342,10 +343,10 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
 const styles = StyleSheet.create({
   gradient: { flex: 1 },
   safe: { flex: 1 },
-  scrollContent: { flexGrow: 1, paddingHorizontal: 24, paddingTop: 40, paddingBottom: 28, justifyContent: 'space-between' },
+  scrollContent: { flexGrow: 1, paddingHorizontal: 24, paddingTop: 24, paddingBottom: 16, alignItems: 'stretch' },
 
   // ===== 品牌 Logo 区 =====
-  brandBlock: { alignItems: 'center', marginTop: 16, marginBottom: 28 },
+  brandBlock: { alignItems: 'center', marginTop: 4, marginBottom: 20 },
   logoWrap: { width: 100, height: 100, alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
   pulseRing: { position: 'absolute', width: 84, height: 84, borderRadius: 42 },
   logoCore: {
@@ -382,9 +383,9 @@ const styles = StyleSheet.create({
   eyeBtn: { padding: 6 },
 
   // ===== 忘记密码 / 协议勾选 =====
-  forgotRow: { alignSelf: 'flex-end', marginTop: -2 },
+  forgotRow: { alignSelf: 'flex-end', marginTop: -6 },
   forgotText: { fontSize: 12.5 },
-  consentRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 2, paddingRight: 4 },
+  consentRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 2 },
   checkbox: {
     width: 18, height: 18, borderRadius: 9, borderWidth: 1.2,
     alignItems: 'center', justifyContent: 'center', marginTop: 1,
@@ -404,12 +405,12 @@ const styles = StyleSheet.create({
   // ===== 注册入口 =====
   registerRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    marginTop: 20, paddingVertical: 8, gap: 4,
+    marginTop: 14, paddingVertical: 6, gap: 4,
   },
   registerText: { fontSize: 13 },
   registerLink: { fontSize: 14, fontWeight: '600' },
 
   // ===== 底部信息 =====
-  footer: { alignItems: 'center', marginTop: 'auto', paddingTop: 24 },
+  footer: { alignItems: 'center', marginTop: 'auto', paddingTop: 16 },
   footerText: { fontSize: 12 },
 });

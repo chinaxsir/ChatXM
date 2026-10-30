@@ -5,6 +5,8 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { useThemeMode, ThemeMode } from '@/hooks/useThemeMode';
 import { ThemedText } from '@/components/themed-text';
 import { LegalSheet } from '@/components/legal-sheet';
+import { UsageChart } from '@/components/usage-chart';
+import { AppPalette } from '@/constants/design';
 import { APP_NAME, APP_VERSION, AI_DISCLAIMER, OFFICIAL_SITE, OFFICIAL_SHOP, SUPPORT_WECHAT, LegalKind } from '@/constants/brand';
 import { api } from '@/services/api';
 
@@ -44,8 +46,8 @@ function maskApiKey(k: string): string {
 }
 
 const palettes = {
-  light: { bg: '#F5F6F8', card: '#FFFFFF', border: '#E5E5EA', sub: '#8E8E93', inputBg: '#F5F6F8', accent: '#007AFF', accentSoft: '#E8F1FF', danger: '#E53E3E', mask: 'rgba(0,0,0,0.4)', panel: '#FFFFFF', cancelBg: '#F0F0F0', cancelText: '#333333', btnBg: '#F0F2F5', btnText: '#333333' },
-  dark: { bg: '#000000', card: '#1C1C1E', border: '#2C2C2E', sub: '#8E8E93', inputBg: '#2C2C2E', accent: '#0A84FF', accentSoft: '#1A3A5C', danger: '#FF6B6B', mask: 'rgba(0,0,0,0.6)', panel: '#1C1C1E', cancelBg: '#2C2C2E', cancelText: '#E5E5EA', btnBg: '#2C2C2E', btnText: '#E5E5EA' },
+  light: { ...AppPalette.light, inputBg: '#F5F6F8' },
+  dark: { ...AppPalette.dark },
 };
 
 export default function SettingsScreen() {
@@ -373,7 +375,7 @@ export default function SettingsScreen() {
 
       {/* 统计卡片 */}
       <View style={[styles.card, { backgroundColor: C.card, borderColor: C.border }]}>
-        <ThemedText style={styles.sectionTitle}>使用统计</ThemedText>
+        <ThemedText style={styles.sectionTitle}>📈 使用统计</ThemedText>
         {/* 三栏 flex:1 均分，中间用分隔线隔开，无嵌套背景 */}
         <View style={[styles.stats, { borderBottomColor: C.border, borderBottomWidth: StyleSheet.hairlineWidth }]}>
           <View style={[styles.statBox]}>
@@ -393,6 +395,20 @@ export default function SettingsScreen() {
             <ThemedText style={[styles.hint, { color: C.sub }]}>{config.usage?.count || 0} 次</ThemedText>
           </View>
         </View>
+
+        {/* 用量明细：近 7 日消耗趋势 */}
+        <View style={{ marginTop: 14 }}>
+          <UsageChart
+            daily={config.usage?.daily}
+            colors={{
+              accent: C.accent,
+              sub: C.sub,
+              border: C.border,
+              barBg: scheme === 'dark' ? C.border : C.btnBg,
+            }}
+          />
+        </View>
+
         <TouchableOpacity style={[styles.btn, { backgroundColor: C.accent, marginTop: 14 }]} onPress={() => setShowRecharge(true)}>
           <ThemedText style={styles.btnText}>💵 充值</ThemedText>
         </TouchableOpacity>
@@ -442,7 +458,7 @@ export default function SettingsScreen() {
       {/* 第三方 API 卡片 */}
       <View style={[styles.card, { backgroundColor: C.card, borderColor: C.border, padding: 14 }]}>
         <View style={styles.row}>
-          <ThemedText style={styles.sectionTitle}>第三方 API</ThemedText>
+          <ThemedText style={styles.sectionTitle}>🔌 第三方 API</ThemedText>
           <TouchableOpacity onPress={openAddApiModal}>
             <ThemedText style={{ color: C.accent, fontWeight: '500' }}>＋ 添加</ThemedText>
           </TouchableOpacity>
@@ -822,7 +838,7 @@ const styles = StyleSheet.create({
   segActiveText: { color: '#FFF', fontSize: 13, fontWeight: '600' },
   scrollContent: { padding: 16, gap: 12 },
   center: { justifyContent: 'center', alignItems: 'center', gap: 16 },
-  card: { borderRadius: 16, borderWidth: 1, padding: 16, elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 8 },
+  card: { borderRadius: 16, borderWidth: 1, padding: 14, elevation: 3, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 8 },
   accountRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   avatar: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   avatarText: { color: '#FFF', fontSize: 18, fontWeight: '600' },

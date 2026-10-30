@@ -453,6 +453,14 @@ export default function ChatScreen() {
     }
 
     const displayText = textToSend.trim();
+
+    // 对话内「帮我生成一张图」类请求：直接走图片生成通道，
+    // 否则对话模型只会回答「我无法生成图片」，体验不成立
+    if (!image && !fileName && detectDrawIntent(displayText)) {
+      await inlineDraw(displayText);
+      return;
+    }
+
     const userMsg: Msg = { role: 'user', content: promptText, displayContent: displayText, image, fileName };
     const aiMsgKey = 'ai_' + Date.now();
     const aiMsg: Msg = { role: 'assistant', content: '' };
@@ -586,6 +594,9 @@ export default function ChatScreen() {
         // 传输层异常：网络中断 / 网关拒绝。不再向用户暴露体积相关提示
         if (rawMsg.includes('Bad file descriptor') || rawMsg.includes('fetch failed') || rawMsg.includes('Network request failed')) {
           Alert.alert('Chat X', '网络连接中断，请检查网络后重试');
+        } else if (/(并发量较大|并发|繁忙|排队|拥挤|秒后重试|rate limit|overload|too many requests)/i.test(rawMsg)) {
+          // 自动重试仍失败：给用户商业化的柔性提示，不透出门户内部限流文案
+          Alert.alert('Chat X', '当前使用人数较多，请稍后再试');
         } else {
           Alert.alert('Chat X', '对话请求失败: ' + rawMsg);
         }
@@ -608,7 +619,6 @@ export default function ChatScreen() {
       const { urls, error } = await api.generateImage({
         endpoint: target.endpoint,
         token: target.token,
-        model: 'gemini',
         prompt: drawPrompt.trim(),
         n: drawN,
         size: drawSize,
@@ -635,6 +645,55 @@ export default function ChatScreen() {
       setDrawResult({ urls: [], error: e?.message });
     } finally {
       setDrawing(false);
+    }
+  };
+
+  // 识别「让 AI 直接出图」的对话意图：对话模型本身不能出图，
+  // 命中意图时自动转交图片生成通道，用户无需再点画笔按钮。
+  const detectDrawIntent = (t: string): boolean => {
+    const s = t.trim();
+    if (!s || s.length > 120) return false;
+    // 排除识图/分析类请求
+    if (/(识别|描述|分析|看图|这是什么|图里|图中|翻译)/.test(s)) return false;
+    const hasAction = /(生成|画一|画个|画张|绘制|设计|做一|做张|来一张|给我一张|出图|帮我画|帮我生成)/.test(s);
+    const hasObject = /(图片|照片|插画|海报|头像|壁纸|logo|图标|绘画|漫画|动图|表情包|图)/.test(s);
+    return hasAction && hasObject;
+  };
+
+  // 对话内直接出图：把结果作为 AI 回复插入会话
+  const inlineDraw = async (prompt: string) => {
+    const target = resolveTarget();
+    const userMsg: Msg = { role: 'user', content: prompt, displayContent: prompt };
+    const aiMsg: Msg = { role: 'assistant', content: '' };
+    const newMessages = [...messages, userMsg, aiMsg];
+    aiMsgKeyRef.current = '';
+    aiTextRef.current = '';
+    setMessages(newMessages);
+    setInput('');
+    setSending(true);
+    try {
+      const { urls, error } = await api.generateImage({
+        endpoint: target.endpoint,
+        token: target.token,
+        prompt,
+        n: 1,
+        size: '1024x1024',
+      });
+      const reply = urls.length > 0
+        ? urls.map((u, i) => `![生成图${i + 1}](${u})`).join('\n')
+        : `图片生成失败，请稍后重试。${error ? `（${error}）` : ''}`;
+      aiTextRef.current = reply;
+      const finalMessages = [...newMessages];
+      finalMessages[finalMessages.length - 1] = { role: 'assistant', content: reply };
+      setMessages(finalMessages);
+      try { await api.saveHistory(sessionId, finalMessages); } catch {}
+    } catch (e: any) {
+      const reply = `图片生成失败，请稍后重试。`;
+      const finalMessages = [...newMessages];
+      finalMessages[finalMessages.length - 1] = { role: 'assistant', content: reply };
+      setMessages(finalMessages);
+    } finally {
+      setSending(false);
     }
   };
 

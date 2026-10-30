@@ -69,6 +69,17 @@ function safeParse(raw: string | null, fallback: any): any {
   try { return JSON.parse(raw); } catch { return fallback; }
 }
 
+// 判断是否「上游临时繁忙」类错误：这类错误重试即可能成功，不该直接抛给用户。
+// 网关常见文案：当前并发量较大，请 300 秒后重试 / 上游繁忙 / 渠道排队 / overloaded
+const TRANSIENT_PATTERN = /并发量较大|并发|繁忙|排队|拥挤|请.*秒后重试|稍后重试|rate limit|overload|too many requests|temporarily unavailable/i;
+
+function isTransientError(status: number, rawText: string): boolean {
+  if (status === 408 || status === 425 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504) return true;
+  return TRANSIENT_PATTERN.test(rawText || '');
+}
+
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 // 构造用户消息内容：支持纯文本 / 文本+图片 / 文本+音频 / 文本+图片+音频
 function buildUserContent(args: any): any {
   const hasMedia = args.image || args.audio;
@@ -416,145 +427,294 @@ export const api = {
     return response.json();
   },
 
-  // 流式对话（SSE），onDelta 接收增量文本，onDone 接收最终 usage，signal 用于中断
+  // 流式对话（SSE），onDelta 接收增量文本，onDone 接收最终 usage，signal 用于中断。
+  // 上游临时繁忙（并发量较大/429/503）时自动静默重试，用户只看到「正在思考」，
+  // 不会收到「并发量较大请 300 秒后重试」这类网关内部文案。
   async sendChatStream(args: any, onDelta: (text: string) => void, onDone: (usage: any) => void, signal?: AbortSignal) {
     const authHeader = args.token ? (args.token.startsWith('Bearer ') ? args.token : `Bearer ${args.token}`) : '';
     const base = normalizeEndpoint(args.endpoint);
-    const response = await fetch(`${base}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': authHeader,
-        'Content-Type': 'application/json',
-      },
-      signal,
-      body: JSON.stringify({
-        model: args.model,
-        stream: true,
-        stream_options: { include_usage: true },
-        messages: sanitizeMessages(JSON.parse(args.history || "[]")).concat([buildUserContent(args)]),
-      }),
+    const body = JSON.stringify({
+      model: args.model,
+      stream: true,
+      stream_options: { include_usage: true },
+      messages: sanitizeMessages(JSON.parse(args.history || "[]")).concat([buildUserContent(args)]),
     });
 
-    // 调试日志：首条请求体，验证多模态结构是否正确
-    try {
-      const debugBody = JSON.parse(JSON.stringify({
-        model: args.model,
-        messages: sanitizeMessages(JSON.parse(args.history || "[]")).concat([buildUserContent(args)]),
-      }));
-      const lastUser = debugBody.messages[debugBody.messages.length - 1];
-      const hasImageInLast = Array.isArray(lastUser?.content) && lastUser.content.some((p: any) => p.type === 'image_url');
-      const imagePreview = hasImageInLast
-        ? lastUser.content.find((p: any) => p.type === 'image_url')?.image_url?.url?.slice(0, 80) + '...'
-        : '(none)';
-      // 检查历史中是否也有图片消息
-      const historyHasImage = debugBody.messages.slice(0, -1).some((m: any) =>
-        Array.isArray(m?.content) && m.content.some((p: any) => p.type === 'image_url')
-      );
-      console.log('[ChatX] stream request:', JSON.stringify({
-        model: args.model,
-        totalMessages: debugBody.messages.length,
-        lastRole: lastUser?.role,
-        lastContentIsArray: Array.isArray(lastUser?.content),
-        lastHasImage: hasImageInLast,
-        imageUrlPrefix: imagePreview,
-        historyHasImage,
-      }));
-    } catch {}
+    const MAX_ATTEMPTS = 3;
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(friendlyError(response.status, errText));
+    // 调试日志：仅首轮打印，验证多模态结构是否正确
+    if (args.__debugLog !== false) {
+      try {
+        const parsed = JSON.parse(body);
+        const lastUser = parsed.messages[parsed.messages.length - 1];
+        const hasImageInLast = Array.isArray(lastUser?.content) && lastUser.content.some((p: any) => p.type === 'image_url');
+        const imagePreview = hasImageInLast
+          ? lastUser.content.find((p: any) => p.type === 'image_url')?.image_url?.url?.slice(0, 60) + '...'
+          : '(none)';
+        console.log('[ChatX] stream request:', JSON.stringify({
+          model: args.model,
+          totalMessages: parsed.messages.length,
+          lastContentIsArray: Array.isArray(lastUser?.content),
+          lastHasImage: hasImageInLast,
+          imageUrlPrefix: imagePreview,
+        }));
+      } catch {}
     }
 
-    // @ts-ignore
-    const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let usage: any = null;
-    let aborted = false;
-    signal?.addEventListener('abort', () => { aborted = true; reader.cancel().catch(() => {}); });
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      if (signal?.aborted) return;
+      let emitted = false;      // 是否已向 UI 输出任何增量
+      let retryable = false;
+      let lastError = '';
 
-    // 30 秒空闲超时：防止 reader.read() 永久挂起（网关返回 200 但无后续数据）
-    let idleTimer: ReturnType<typeof setTimeout> | null = null;
-    const resetIdle = () => {
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => {
-        if (!aborted) {
-          aborted = true;
-          reader.cancel().catch(() => {});
-          throw new Error('AI 响应超时，请稍后重试');
+      const response = await fetch(`${base}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' },
+        signal,
+        body,
+      }).catch((e: any) => {
+        // 网络层异常也归入可重试
+        lastError = e?.message || '网络连接失败';
+        retryable = true;
+        return null as any;
+      });
+
+      if (!response) {
+        if (attempt < MAX_ATTEMPTS && !signal?.aborted) {
+          await delay(6000 * attempt);
+          continue;
         }
-      }, 30000);
-    };
-    resetIdle();
-
-    try {
-      while (!aborted) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        resetIdle(); // 收到数据重置计时
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data:')) continue;
-          const data = trimmed.slice(5).trim();
-          if (!data || data === '[DONE]') continue;
-          try {
-            const json = JSON.parse(data);
-            // 流内可能携带错误（网关返回 200 但 data 里有 error）
-            if (json.error) {
-              throw new Error(json.error.message || 'AI 响应错误');
-            }
-            const delta = json.choices?.[0]?.delta;
-            if (delta?.content) onDelta(delta.content);
-            if (json.usage) usage = json.usage;
-          } catch (e: any) {
-            if (e?.message?.includes('AI 响应错误')) throw e;
-            // 忽略非 JSON 行
-          }
-        }
+        throw new Error(lastError || '网络连接失败');
       }
-    } finally {
-      if (idleTimer) clearTimeout(idleTimer);
+
+      if (!response.ok) {
+        const errText = await response.text();
+        const msg = friendlyError(response.status, errText);
+        // 上游繁忙：静默重试，绝不把「并发量较大」抛给用户
+        if (isTransientError(response.status, errText) && attempt < MAX_ATTEMPTS && !signal?.aborted) {
+          await delay(6000 * attempt);
+          continue;
+        }
+        throw new Error(msg);
+      }
+
+      // @ts-ignore
+      const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let usage: any = null;
+      let cancelled = false;
+
+      const cancel = () => { cancelled = true; reader.cancel().catch(() => {}); };
+      signal?.addEventListener('abort', cancel);
+
+      // 空闲超时：60 秒无任何数据即视为上游卡死（图片对话首包更慢，放宽到 60s）
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      const resetIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(cancel, 60000);
+      };
+      resetIdle();
+
+      try {
+        while (!cancelled) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          resetIdle();
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data:')) continue;
+            const data = trimmed.slice(5).trim();
+            if (!data || data === '[DONE]') continue;
+            try {
+              const json = JSON.parse(data);
+              // 流内错误：网关可能返回 200 但 data 中带 error
+              if (json.error) {
+                const emsg = json.error.message || 'AI 响应错误';
+                // 尚未输出任何内容且属于繁忙类 → 静默重试
+                if (!emitted && isTransientError(0, emsg) && attempt < MAX_ATTEMPTS) {
+                  retryable = true;
+                  lastError = emsg;
+                  cancel();
+                  break;
+                }
+                throw new Error(emsg);
+              }
+              const delta = json.choices?.[0]?.delta;
+              if (delta?.content) {
+                // 首包内容若是网关繁忙文案（部分渠道把限流信息当正文流出来），
+                // 视为可重试错误，不写入气泡，避免用户看到「并发量较大」
+                if (!emitted && TRANSIENT_PATTERN.test(delta.content)) {
+                  retryable = true;
+                  lastError = delta.content.replace(/^\s*错误[：:]\s*/, '').trim();
+                  cancel();
+                  break;
+                }
+                emitted = true;
+                onDelta(delta.content);
+              }
+              if (json.usage) usage = json.usage;
+            } catch (e: any) {
+              if (e?.message && !e.message.includes('Unexpected')) throw e;
+            }
+          }
+          if (retryable) break;
+        }
+      } finally {
+        if (idleTimer) clearTimeout(idleTimer);
+      }
+
+      if (retryable && attempt < MAX_ATTEMPTS && !signal?.aborted) {
+        await delay(6000 * attempt);
+        continue;
+      }
+      if (retryable) throw new Error(lastError || 'AI 响应繁忙，请稍后重试');
+
+      if (signal?.aborted) return;
+      onDone(usage || {});
+      return;
     }
-    if (!aborted) onDone(usage || {});
   },
 
   // 图片生成（OpenAI 兼容 /v1/images/generations）
+  // 图片生成：网关不保证支持 /v1/images/generations，因此按「多通道 + 多模型」依次尝试：
+  // 通道 A：/v1/chat/completions + 原生出图模型（gemini-3.1-flash-image 等）—— 网关声明支持的主力
+  // 通道 B：/v1/images/generations + cogview-4（智谱）
+  // 任一通道成功即返回，全部失败才报错。用户看到的只有「生成中」。
   async generateImage(args: any): Promise<{ urls: string[]; error?: string }> {
     const authHeader = args.token
       ? (args.token.startsWith('Bearer ') ? args.token : `Bearer ${args.token}`)
       : '';
     const base = normalizeEndpoint(args.endpoint || 'https://gate.127110.xyz');
-    const body: any = {
-      model: args.model || 'dall-e-3',
-      prompt: args.prompt,
-      n: args.n || 1,
-      size: args.size || '1024x1024',
-      response_format: 'url',
+    const quantity = Math.max(1, Math.min(4, Number(args.n) || 1));
+
+    // 从任意响应对象中抽取图片：兼容 markdown / images[] / b64_json / data[]
+    const extractUrls = (json: any): string[] => {
+      const out: string[] = [];
+      const push = (v: any) => { if (typeof v === 'string' && v) out.push(v); };
+
+      // OpenAI images 格式
+      for (const d of json?.data || []) {
+        if (d?.url) push(d.url);
+        else if (d?.b64_json) push(`data:image/png;base64,${d.b64_json}`);
+      }
+
+      for (const choice of json?.choices || []) {
+        const msg = choice?.message;
+        if (!msg) continue;
+        // Gemini 风格 images 数组
+        for (const img of msg.images || []) {
+          push(img?.image_url?.url || img?.url);
+          if (img?.b64_json) push(`data:image/png;base64,${img.b64_json}`);
+        }
+        // 多模态 content 数组
+        if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            push(part?.image_url?.url || part?.url);
+            if (part?.b64_json) push(`data:image/png;base64,${part.b64_json}`);
+          }
+        }
+        // 文本里的 markdown 图片 / 内联 data URL
+        if (typeof msg.content === 'string') {
+          const md = msg.content.match(/!\[[^\]]*\]\(([^)]+)\)/g) || [];
+          for (const m of md) {
+            const u = m.match(/\(([^)]+)\)/)?.[1];
+            if (u) push(u.trim());
+          }
+          const dataUrls = msg.content.match(/data:image\/[a-zA-Z+]+;base64,[A-Za-z0-9+/=]+/g) || [];
+          for (const d of dataUrls) push(d);
+        }
+      }
+      // 去重 + 只保留可用形态
+      return Array.from(new Set(out)).filter(u => /^(https?:|data:image)/.test(u));
     };
-    if (args.quality) body.quality = args.quality;
-    if (args.style) body.style = args.style;
 
-    const response = await fetch(`${base}/v1/images/generations`, {
-      method: 'POST',
-      headers: {
-        'Authorization': authHeader,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      return { urls: [], error: friendlyError(response.status, errText) };
+    // 通道 A：原生出图模型走 chat/completions（逐个模型尝试）
+    // 模型清单动态取自网关 /v1/models，避免硬编码失效；稳定版优先于 preview
+    let chatModels: string[] = args.chatModels || [];
+    if (chatModels.length === 0) {
+      try {
+        const r = await fetch(`${base}/v1/models`, { headers: authHeader ? { Authorization: authHeader } : {} });
+        if (r.ok) {
+          const json = await r.json();
+          const ids: string[] = (json?.data || []).map((m: any) => m?.id).filter((id: any) => typeof id === 'string');
+          const priority = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-3-pro-image', 'gemini-3.1-flash-lite-image'];
+          const all = ids.filter(id => /image/i.test(id) && !/edit/i.test(id));
+          chatModels = [
+            ...priority.filter(p => all.includes(p)),
+            ...all.filter(id => !priority.includes(id) && !/preview/i.test(id)),
+            ...all.filter(id => !priority.includes(id) && /preview/i.test(id)),
+          ];
+        }
+      } catch { /* 忽略，落到默认清单 */ }
+    }
+    if (chatModels.length === 0) {
+      chatModels = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-3-pro-image'];
+    }
+    let lastErr = '';
+    for (const model of chatModels) {
+      try {
+        const response = await fetch(`${base}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: args.prompt }],
+            stream: false,
+          }),
+        });
+        if (!response.ok) {
+          const errText = await response.text();
+          lastErr = friendlyError(response.status, errText);
+          // 模型不存在/无权限 → 换下一个；繁忙 → 重试一次
+          if (isTransientError(response.status, errText)) {
+            await delay(4000);
+            continue;
+          }
+          continue;
+        }
+        const json = await response.json();
+        const urls = extractUrls(json);
+        if (urls.length > 0) return { urls: urls.slice(0, quantity) };
+        lastErr = '模型未返回图片';
+      } catch (e: any) {
+        lastErr = e?.message || '网络异常';
+      }
     }
 
-    const json = await response.json();
-    const urls: string[] = (json?.data || []).map((d: any) => d.url).filter(Boolean);
-    return { urls };
+    // 通道 B：标准 images/generations（cogview 系列）
+    const drawModels: string[] = args.drawModels || ['cogview-4', 'cogview-3-flash'];
+    for (const model of drawModels) {
+      try {
+        const response = await fetch(`${base}/v1/images/generations`, {
+          method: 'POST',
+          headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            prompt: args.prompt,
+            n: quantity,
+            size: args.size || '1024x1024',
+          }),
+        });
+        if (!response.ok) {
+          const errText = await response.text();
+          lastErr = friendlyError(response.status, errText);
+          if (isTransientError(response.status, errText)) await delay(4000);
+          continue;
+        }
+        const json = await response.json();
+        const urls = extractUrls(json);
+        if (urls.length > 0) return { urls: urls.slice(0, quantity) };
+        lastErr = '模型未返回图片';
+      } catch (e: any) {
+        lastErr = e?.message || '网络异常';
+      }
+    }
+
+    return { urls: [], error: lastErr || '当前渠道暂不支持图片生成' };
   },
 };

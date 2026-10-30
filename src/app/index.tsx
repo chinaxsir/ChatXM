@@ -8,9 +8,9 @@ import * as DocumentPicker from 'expo-document-picker';
 import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
 import { ThemedText } from '@/components/themed-text';
 import { ModelIcon } from '@/components/model-icon';
+import { MarkdownSafe } from '@/components/markdown-safe';
 import { api } from '@/services/api';
 import * as Clipboard from 'expo-clipboard';
-import Markdown from 'react-native-markdown-display';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import LoginScreen from './login';
@@ -98,6 +98,7 @@ type Msg = {
   content: string;          // 完整内容（含附件），用于 API 请求和历史持久化
   displayContent?: string;  // 展示用的简短内容（仅用户输入文字），用于 UI 气泡
   image?: string | null;
+  images?: string[] | null; // AI 生成的图片：用原生 Image 渲染，避免 base64 走 Markdown 解析
   fileName?: string | null;
 };
 
@@ -630,10 +631,9 @@ export default function ChatScreen() {
         setDrawResult({ urls: [], error: '未返回图片' });
       } else {
         setDrawResult({ urls });
-        // 把生成的图片和 prompt 作为消息追加到对话
+        // 把生成的图片和 prompt 作为消息追加到对话（图片走原生 Image 渲染）
         const userMsg: Msg = { role: 'user', content: `🎨 生成图片：${drawPrompt.trim()}`, displayContent: `🎨 生成图片：${drawPrompt.trim()}` };
-        const aiContent = urls.map(u => `![生成图](${u})`).join('\n');
-        const aiMsg: Msg = { role: 'assistant', content: aiContent };
+        const aiMsg: Msg = { role: 'assistant', content: '已为你生成图片', images: urls };
         const newMessages = [...messages, userMsg, aiMsg];
         setMessages(newMessages);
         await api.saveHistory(sessionId, newMessages);
@@ -679,12 +679,17 @@ export default function ChatScreen() {
         n: 1,
         size: '1024x1024',
       });
-      const reply = urls.length > 0
-        ? urls.map((u, i) => `![生成图${i + 1}](${u})`).join('\n')
-        : `图片生成失败，请稍后重试。${error ? `（${error}）` : ''}`;
-      aiTextRef.current = reply;
+      const reply = urls.length > 0 ? '已为你生成图片' : '';
+      const errorReply = urls.length === 0
+        ? `图片生成失败，请稍后重试。${error ? `（${error}）` : ''}`
+        : '';
+      aiTextRef.current = reply || errorReply;
       const finalMessages = [...newMessages];
-      finalMessages[finalMessages.length - 1] = { role: 'assistant', content: reply };
+      finalMessages[finalMessages.length - 1] = {
+        role: 'assistant',
+        content: reply || errorReply,
+        images: urls.length > 0 ? urls : null,
+      };
       setMessages(finalMessages);
       try { await api.saveHistory(sessionId, finalMessages); } catch {}
     } catch (e: any) {
@@ -1035,9 +1040,23 @@ export default function ChatScreen() {
                   </View>
                 )}
                 {!!item.image && <Image source={{ uri: item.image }} style={styles.msgImage} resizeMode="cover" />}
+                {!!item.images?.length && (
+                  <View style={styles.msgImagesWrap}>
+                    {item.images.map((u, i) => (
+                      <Image
+                        key={`${i}_${u.slice(0, 16)}`}
+                        source={{ uri: u }}
+                        style={styles.msgImage}
+                        resizeMode="cover"
+                      />
+                    ))}
+                  </View>
+                )}
                 {!!item.content && (
                   item.role === 'assistant' ? (
-                    <Markdown
+                    <MarkdownSafe
+                      content={item.content}
+                      textStyle={[styles.msgText, { color: C.aiText }]}
                       style={{
                         body: { color: C.aiText, fontSize: 15, lineHeight: 21 },
                         code_inline: { backgroundColor: C.inputBg, color: C.aiText, paddingHorizontal: 4, borderRadius: 4, fontSize: 13 },
@@ -1058,9 +1077,7 @@ export default function ChatScreen() {
                         th: { backgroundColor: C.inputBg, color: C.aiText, padding: 6, fontWeight: '600' },
                         td: { color: C.aiText, padding: 6, borderTopWidth: 1, borderTopColor: C.border },
                       }}
-                    >
-                      {item.content}
-                    </Markdown>
+                    />
                   ) : (
                     <ThemedText style={[styles.msgText, { color: '#FFFFFF' }]}>
                       {item.displayContent || item.content}
@@ -1547,6 +1564,7 @@ const styles = StyleSheet.create({
   listContent: { padding: 16 },
   msgBubble: { padding: 12, borderRadius: 18, marginVertical: 6, maxWidth: '85%' },
   msgImage: { width: 200, height: 200, borderRadius: 12, marginBottom: 6 },
+  msgImagesWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   msgText: { fontSize: 15, lineHeight: 21 },
   thinking: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4 },
   thinkDot: { width: 6, height: 6, borderRadius: 3 },

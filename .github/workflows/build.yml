@@ -83,15 +83,20 @@ jobs:
           echo "=== Found workspace: $WORKSPACE ==="
           echo "=== Found project: $PROJECT ==="
           if [ -n "$WORKSPACE" ]; then
-            BUILD_CMD="xcodebuild -workspace $WORKSPACE -scheme ChatXM"
+            TARGET="-workspace $WORKSPACE"
+            SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" 2>/dev/null | awk '/Schemes:/{f=1;next} f&&NF{print $1;exit}')
           elif [ -n "$PROJECT" ]; then
-            SCHEME=$(xcodebuild -list -project "$PROJECT" 2>/dev/null | grep -A20 "Schemes:" | tail -n +2 | head -1 | xargs)
-            echo "=== Using scheme: $SCHEME ==="
-            BUILD_CMD="xcodebuild -project $PROJECT -scheme ${SCHEME:-ChatXM}"
+            TARGET="-project $PROJECT"
+            SCHEME=$(xcodebuild -list -project "$PROJECT" 2>/dev/null | awk '/Schemes:/{f=1;next} f&&NF{print $1;exit}')
           else
             echo "ERROR: No .xcworkspace or .xcodeproj found in ios/"
             exit 1
           fi
+          # scheme 名跟随 app.json 的 name（Chat X → ChatX），不再硬编码，
+          # 取不到时回退到工程文件名
+          SCHEME=${SCHEME:-$(basename "${WORKSPACE:-$PROJECT}" | sed -E 's/\.(xcworkspace|xcodeproj)$//')}
+          echo "=== Using scheme: $SCHEME ==="
+          BUILD_CMD="xcodebuild $TARGET -scheme $SCHEME"
           set +e
           $BUILD_CMD -configuration Release -sdk iphoneos -arch arm64 -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" ONLY_ACTIVE_ARCH=YES > xcodebuild.log 2>&1
           EXIT_CODE=$?

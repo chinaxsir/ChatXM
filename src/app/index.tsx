@@ -1429,8 +1429,8 @@ export default function ChatScreen() {
         <View style={styles.modalMask}>
           <Pressable style={{ flex: 1 }} onPress={() => !drawing && setShowDrawPanel(false)} />
           <View style={[styles.drawPanel, { backgroundColor: C.panelBg }]}>
-            {/* 内部拦截层，防止面板内点击冒泡 */}
-            <Pressable style={{ flex: 1 }} onPress={() => {}}>
+            {/* 面板内容直接随内容撑高：若此处给 flex:1，父级高度未定会被压成 0 高（弹层不可见） */}
+            <Pressable onPress={() => {}}>
               <View style={[styles.drawPanelHandle, { backgroundColor: C.border }]} />
               <View style={styles.drawHeader}>
                 <Ionicons name="brush" size={22} color={C.accent} />

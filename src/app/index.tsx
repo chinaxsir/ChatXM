@@ -5,7 +5,8 @@ import { useThemeMode } from '@/hooks/useThemeMode';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as DocumentPicker from 'expo-document-picker';
-import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy';
+import { readAsStringAsync, writeAsStringAsync, downloadAsync, cacheDirectory, EncodingType } from 'expo-file-system/legacy';
+import * as MediaLibrary from 'expo-media-library';
 import { ThemedText } from '@/components/themed-text';
 import { ModelIcon } from '@/components/model-icon';
 import { BrandLogo } from '@/components/brand-logo';
@@ -97,6 +98,42 @@ async function compressImageToDataUrl(uri: string, fallbackBase64?: string, mime
     return `data:${safeMime};base64,${raw}`;
   }
   return '';
+}
+
+// 保存生成图：原生端写入相册，Web 端触发浏览器下载。
+// data URL 先落盘为缓存文件再写入相册；远程 URL 先下载再写入。
+async function saveImageToAlbum(url: string): Promise<{ ok: boolean; msg: string }> {
+  try {
+    if (Platform.OS === 'web') {
+      const doc = (globalThis as any).document;
+      if (!doc) return { ok: false, msg: '当前环境不支持下载' };
+      const a = doc.createElement('a');
+      a.href = url;
+      a.download = `chatx-${Date.now()}.png`;
+      doc.body.appendChild(a);
+      a.click();
+      a.remove();
+      return { ok: true, msg: '已开始下载' };
+    }
+    const perm = await MediaLibrary.requestPermissionsAsync(true);
+    if (!perm.granted) return { ok: false, msg: '未获得相册写入权限，请在系统设置中开启' };
+    let localUri = url;
+    if (url.startsWith('data:image')) {
+      const comma = url.indexOf(',');
+      const b64 = comma >= 0 ? url.slice(comma + 1) : '';
+      if (!b64) return { ok: false, msg: '图片数据无效' };
+      const ext = /image\/png/.test(url.slice(0, comma)) ? 'png' : 'jpg';
+      localUri = `${cacheDirectory}chatx-gen-${Date.now()}.${ext}`;
+      await writeAsStringAsync(localUri, b64, { encoding: EncodingType.Base64 });
+    } else if (/^https?:/.test(url)) {
+      const dl = await downloadAsync(url, `${cacheDirectory}chatx-gen-${Date.now()}.png`);
+      localUri = dl.uri;
+    }
+    await MediaLibrary.saveToLibraryAsync(localUri);
+    return { ok: true, msg: '已保存到相册' };
+  } catch (e: any) {
+    return { ok: false, msg: '保存失败: ' + (e?.message || e) };
+  }
 }
 
 type Msg = {
@@ -685,6 +722,19 @@ export default function ChatScreen() {
     applyConfig(newConfig);
   };
 
+  // 生成图片：长按弹出保存/下载菜单（web 端走浏览器下载）
+  const saveGenImage = async (url: string) => {
+    const r = await saveImageToAlbum(url);
+    if (r.ok) { try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {} }
+    Alert.alert(APP_NAME, r.msg);
+  };
+  const onGenImageLongPress = (url: string) => {
+    Alert.alert(APP_NAME, '生成图片', [
+      { text: Platform.OS === 'web' ? '下载图片' : '保存到相册', onPress: () => { saveGenImage(url); } },
+      { text: '取消', style: 'cancel' },
+    ]);
+  };
+
   const drawImage = async () => {
     if (!drawPrompt.trim() || drawing) return;
     setDrawing(true);
@@ -707,7 +757,7 @@ export default function ChatScreen() {
         setDrawResult({ urls });
         // 把生成的图片和 prompt 作为消息追加到对话（图片走原生 Image 渲染）
         const userMsg: Msg = { role: 'user', content: `🎨 生成图片：${drawPrompt.trim()}`, displayContent: `🎨 生成图片：${drawPrompt.trim()}` };
-        const aiMsg: Msg = { role: 'assistant', content: '已为你生成图片', images: urls };
+        const aiMsg: Msg = { role: 'assistant', content: Platform.OS === 'web' ? '已为你生成图片（长按可下载）' : '已为你生成图片（长按可保存到相册）', images: urls };
         const newMessages = [...messages, userMsg, aiMsg];
         setMessages(newMessages);
         await api.saveHistory(sessionId, newMessages);
@@ -754,7 +804,7 @@ export default function ChatScreen() {
         n: 1,
         size: '1024x1024',
       });
-      const reply = urls.length > 0 ? '已为你生成图片' : '';
+      const reply = urls.length > 0 ? (Platform.OS === 'web' ? '已为你生成图片（长按可下载）' : '已为你生成图片（长按可保存到相册）') : '';
       const errorReply = urls.length === 0
         ? `图片生成失败，请稍后重试。${error ? `（${error}）` : ''}`
         : '';
@@ -1123,12 +1173,18 @@ export default function ChatScreen() {
                 {!!item.images?.length && (
                   <View style={styles.msgImagesWrap}>
                     {item.images.map((u, i) => (
-                      <Image
+                      <TouchableOpacity
                         key={`${i}_${u.slice(0, 16)}`}
-                        source={{ uri: u }}
-                        style={styles.msgImage}
-                        resizeMode="cover"
-                      />
+                        activeOpacity={0.85}
+                        onLongPress={() => onGenImageLongPress(u)}
+                        delayLongPress={350}
+                      >
+                        <Image
+                          source={{ uri: u }}
+                          style={styles.msgImage}
+                          resizeMode="cover"
+                        />
+                      </TouchableOpacity>
                     ))}
                   </View>
                 )}
@@ -1562,13 +1618,24 @@ export default function ChatScreen() {
 
                 {/* 生成结果预览 */}
                 {drawResult?.urls && drawResult.urls.length > 0 && (
-                  <View style={styles.drawResultGrid}>
-                    {drawResult.urls.map((u, i) => (
-                      <View key={i} style={[styles.drawResultCard, { backgroundColor: C.inputBg }]}>
-                        <Image source={{ uri: u }} style={styles.drawResultImg} />
-                      </View>
-                    ))}
-                  </View>
+                  <>
+                    <View style={styles.drawResultGrid}>
+                      {drawResult.urls.map((u, i) => (
+                        <TouchableOpacity
+                          key={i}
+                          style={[styles.drawResultCard, { backgroundColor: C.inputBg }]}
+                          activeOpacity={0.85}
+                          onLongPress={() => onGenImageLongPress(u)}
+                          delayLongPress={350}
+                        >
+                          <Image source={{ uri: u }} style={styles.drawResultImg} />
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <Text style={{ color: C.sub, fontSize: 11, marginTop: 6 }}>
+                      {Platform.OS === 'web' ? '长按图片可下载' : '长按图片可保存到相册'}
+                    </Text>
+                  </>
                 )}
                 {drawResult?.error && (
                   <Text style={{ color: C.danger, textAlign: 'center', marginTop: 8 }}>{drawResult.error}</Text>

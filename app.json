@@ -49,7 +49,14 @@
           "microphonePermission": "允许 $(PRODUCT_NAME) 访问麦克风以录制语音消息"
         }
       ],
-      "expo-speech-recognition"
+      "expo-speech-recognition",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "允许 $(PRODUCT_NAME) 将生成的图片保存到相册",
+          "savePhotosPermission": "允许 $(PRODUCT_NAME) 将生成的图片保存到相册"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { StyleSheet, View, Text, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Keyboard, Platform, SafeAreaView, Modal, Alert, Image, Pressable, Animated, ScrollView } from 'react-native';
+import { StyleSheet, View, Text, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Keyboard, Platform, SafeAreaView, Modal, Alert, Image, Pressable, Animated, ScrollView, Dimensions } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useThemeMode } from '@/hooks/useThemeMode';
 import * as ImagePicker from 'expo-image-picker';
@@ -151,6 +151,9 @@ export default function ChatScreen() {
   const [drawResult, setDrawResult] = useState<{ urls: string[]; error?: string } | null>(null);
   // 绘图面板的键盘高度：Modal 内部拿不到系统 resize，改为监听键盘事件手动上推
   const [drawKbHeight, setDrawKbHeight] = useState(0);
+  // 输入框聚焦状态：作为键盘事件的兜底——即使原生键盘事件因故未下发，
+  // 聚焦时也按经验高度上推，保证输入框必定露出
+  const [drawInputFocused, setDrawInputFocused] = useState(false);
   const [actionIdx, setActionIdx] = useState<number | null>(null);
   const [searchKw, setSearchKw] = useState('');
   // 端侧语音识别模式（expo-speech-recognition，完全调用系统原生识别，不经过API）
@@ -236,14 +239,32 @@ export default function ChatScreen() {
 
   // 绘图面板打开期间监听键盘高度（iOS 需要 willShow 才有动画同步感，Android 只有 didShow 可靠）
   useEffect(() => {
-    if (!showDrawPanel) { setDrawKbHeight(0); return; }
+    if (!showDrawPanel) { setDrawKbHeight(0); setDrawInputFocused(false); return; }
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const s1 = Keyboard.addListener(showEvt, (e) => setDrawKbHeight(e.endCoordinates?.height ?? 0));
-    const s2 = Keyboard.addListener('keyboardDidShow', (e) => setDrawKbHeight(e.endCoordinates?.height ?? 0));
+    // 用 endCoordinates.screenY 换算遮挡高度：键盘隐藏时终帧在屏幕外，
+    // 直接读 height 会误判；winH - screenY 对停靠/浮动键盘都成立
+    const applyKbFrame = (e: any) => {
+      const end = e?.endCoordinates;
+      if (!end) return;
+      const winH = Dimensions.get('window').height;
+      setDrawKbHeight(end.screenY < winH ? Math.max(0, winH - end.screenY) : 0);
+    };
+    const s1 = Keyboard.addListener(showEvt, applyKbFrame);
+    const s2 = Keyboard.addListener('keyboardDidShow', applyKbFrame);
+    // iOS 帧变化事件覆盖最全面（切换输入法/键盘高度变化都会触发）
+    const s3 = Platform.OS === 'ios'
+      ? Keyboard.addListener('keyboardWillChangeFrame', applyKbFrame)
+      : null;
     const h1 = Keyboard.addListener(hideEvt, () => setDrawKbHeight(0));
-    return () => { s1.remove(); s2.remove(); h1.remove(); };
+    return () => { s1.remove(); s2.remove(); s3?.remove(); h1.remove(); };
   }, [showDrawPanel]);
+
+  // 面板上推量：优先用键盘事件实测高度；事件未下发时（极端情况）
+  // 若输入框处于聚焦态，按平台经验值上推，确保输入框永远可见
+  const drawKbOffset = drawKbHeight > 0
+    ? drawKbHeight
+    : (drawInputFocused ? (Platform.OS === 'ios' ? 300 : 280) : 0);
 
   useFocusEffect(
     useCallback(() => {
@@ -1478,12 +1499,13 @@ export default function ChatScreen() {
 
       {/* 图片生成面板 */}
       <Modal visible={showDrawPanel} animationType="slide" transparent onRequestClose={() => setShowDrawPanel(false)}>
-        {/* 键盘避让：Modal 是独立窗口，Android 边到边模式下系统不会 resize，
-            因此按键盘实际高度给整层加下内边距，面板随之浮到键盘上方 */}
-        <View style={{ flex: 1, paddingBottom: drawKbHeight }}>
+        {/* 键盘避让：Modal 是独立窗口，Android 边到边模式下系统不会 resize。
+            上推量直接作用在面板的 marginBottom 上（不依赖外层布局链路，
+            任何容器结构下都生效），面板随之浮到键盘上方 */}
+        <View style={{ flex: 1 }}>
           <View style={styles.modalMask}>
             <Pressable style={{ flex: 1 }} onPress={() => !drawing && setShowDrawPanel(false)} />
-            <View style={[styles.drawPanel, { backgroundColor: C.panelBg }]}>
+            <View style={[styles.drawPanel, { backgroundColor: C.panelBg, marginBottom: drawKbOffset }]}>
               <View style={[styles.drawPanelHandle, { backgroundColor: C.border }]} />
               <View style={styles.drawHeader}>
                 <Ionicons name="brush" size={22} color={C.accent} />
@@ -1504,6 +1526,8 @@ export default function ChatScreen() {
                   placeholderTextColor={C.sub}
                   multiline
                   editable={!drawing}
+                  onFocus={() => setDrawInputFocused(true)}
+                  onBlur={() => setDrawInputFocused(false)}
                 />
 
                 <View style={styles.drawRow}>

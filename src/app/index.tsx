@@ -25,6 +25,19 @@ const BUILTIN_ENDPOINT = 'https://gate.127110.xyz';
 // 单张生成图片在消耗统计中的等效 token 数（仅本地估算，最终以服务端计费为准）
 const IMAGE_TOKEN_EST = 1500;
 
+// 计费口径（官方调用指南 §9，单位：$/1K tokens）
+// 输入输出分开计价（输出约为输入 5 倍），图片按张计价
+const PRICE_INPUT_PER_1K = 0.0004;
+const PRICE_OUTPUT_PER_1K = 0.002;
+const PRICE_PER_IMAGE = 0.012;
+
+// 一次对话的本地费用估算：优先用服务端返回的 usage，缺失时按 4:6 拆分估算总量
+function estimateTextCost(usage: any, totalTokens: number): number {
+  const promptTok = Number(usage?.prompt_tokens) || Math.round(totalTokens * 0.4);
+  const compTok = Number(usage?.completion_tokens) || Math.round(totalTokens * 0.6);
+  return promptTok / 1000 * PRICE_INPUT_PER_1K + compTok / 1000 * PRICE_OUTPUT_PER_1K;
+}
+
 // 单张图片 base64 字符数上限（约 450KB 图片二进制）。
 // 商业场景下必须保守：请求体过大时 iOS 端 fetch 会直接抛
 // "Bad file descriptor"（ExpoModulesCore/Promise.swift）导致发送失败。
@@ -172,7 +185,7 @@ export default function ChatScreen() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [sessionId, setSessionId] = useState('default_session');
   const [input, setInput] = useState('');
-  const [model, setModel] = useState('frapi');
+  const [model, setModel] = useState('gemini');
   const [image, setImage] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
@@ -620,8 +633,8 @@ export default function ChatScreen() {
           const curCfg = configRef.current || config;
           const u = (await api.loadUsageStats()) || { total: 0, prompt: 0, completion: 0, count: 0, daily: {} as any };
           const d = u.daily[day] || { tokens: 0, count: 0 };
-          // 估算扣费金额（按综合 $2 / 1M tokens 估算，仅本地即时反馈，最终以服务端为准）
-          const estimatedCost = total * 0.000002;
+          // 估算扣费金额（按官方计价：输入/输出分档 + 图片按张，仅本地即时反馈，最终以服务端为准）
+          const estimatedCost = estimateTextCost(usage, total);
           const newBalance = curCfg.balance != null ? Math.max(0, Number(curCfg.balance) - estimatedCost) : curCfg.balance;
           const newUsage = {
             total: (u.total || 0) + total,
@@ -675,6 +688,17 @@ export default function ChatScreen() {
         } else if (/(并发量较大|并发|繁忙|排队|拥挤|秒后重试|rate limit|overload|too many requests)/i.test(rawMsg)) {
           // 自动重试仍失败：给用户商业化的柔性提示，不透出门户内部限流文案
           Alert.alert('Chat X', '当前使用人数较多，请稍后再试');
+        } else if (/额度已用完|配额|quota/i.test(rawMsg)) {
+          // 每日配额触顶：告知重置时间，并给出商业转化入口（升级/充值）
+          Alert.alert('Chat X', rawMsg + '\n\n升级到更高套餐即可获得更多每日请求次数。', [
+            { text: '稍后再说', style: 'cancel' },
+            { text: '去充值', onPress: () => router.push('/settings') },
+          ]);
+        } else if (/余额不足|insufficient_balance/i.test(rawMsg)) {
+          Alert.alert('Chat X', rawMsg, [
+            { text: '稍后再说', style: 'cancel' },
+            { text: '去充值', onPress: () => router.push('/settings') },
+          ]);
         } else {
           Alert.alert('Chat X', '对话请求失败: ' + rawMsg);
         }
@@ -714,7 +738,7 @@ export default function ChatScreen() {
     const newConfig = {
       ...curCfg,
       balance: curCfg?.balance != null
-        ? Math.max(0, Number(curCfg.balance) - addTokens * 0.000002)
+        ? Math.max(0, Number(curCfg.balance) - count * PRICE_PER_IMAGE)
         : curCfg?.balance,
       usage: newUsage,
     };
@@ -859,7 +883,7 @@ export default function ChatScreen() {
       const role = m.role === 'user' ? '我' : 'AI';
       return `[${role}]\n${m.displayContent || m.content}`;
     }).join('\n\n');
-    const full = `Chat X 会话导出\n时间: ${new Date().toLocaleString()}\n模型: ${model === 'frapi' ? '官方 API' : model}\n\n${text}`;
+    const full = `Chat X 会话导出\n时间: ${new Date().toLocaleString()}\n模型: ${model}\n\n${text}`;
     await Clipboard.setStringAsync(full);
     Alert.alert('Chat X', '会话内容已复制到剪贴板，可粘贴到任意位置保存');
   };
@@ -1074,7 +1098,7 @@ export default function ChatScreen() {
   const _escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const officialModels: string[] = _allIds.length > 0
     ? _allIds.filter((id) => _allIds.some((o) => o !== id && new RegExp(`^${_escapeRegExp(id)}-\\d`).test(o)))
-    : (config?.official_groups?.length ? config.official_groups : ['frapi']);
+    : (config?.official_groups?.length ? config.official_groups : ['gemini']);
   const isOfficialModel = (v: string) => officialModels.includes(v);
 
   // 顶栏胶囊固定显示「官方」，具体选哪个智能模型组在面板内选择（对用户透明）
@@ -1519,7 +1543,7 @@ export default function ChatScreen() {
               <View style={[styles.modelFooterHint, { backgroundColor: C.bg }]}>
                 <Text style={[styles.modelFooterIcon, { color: C.accent }]}>💡</Text>
                 <ThemedText style={[styles.modelFooterText, { color: C.sub }]}>
-                  {model === 'frapi' || isOfficialModel(model)
+                  {isOfficialModel(model)
                     ? '当前使用：官方 API · 流量稳定 · 免 Key'
                     : '当前使用：第三方 API · 消耗独立额度'}
                 </ThemedText>

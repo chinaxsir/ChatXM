@@ -1,4 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+﻿import AsyncStorage from '@react-native-async-storage/async-storage';
 import { uploadAsync, FileSystemUploadType } from 'expo-file-system/legacy';
 
 const BASE_API_URL = "https://gate.127110.xyz";
@@ -27,6 +27,24 @@ function stripHtml(html: string): string {
     .trim();
 }
 
+// 网关业务错误码 → 面向用户的提示（官方调用指南 §10）
+// 这些错误属于「确定性失败」，重试没有意义，必须直接告知用户
+const ERROR_CODE_HINTS: Record<string, string> = {
+  daily_quota_exceeded: '今日使用额度已用完',
+  insufficient_balance: '账户余额不足，请充值后继续使用',
+  token_frozen: 'API 密钥已被冻结，请到官网密钥页面处理',
+  ip_rejected: '当前网络 IP 不在白名单，请更换网络或到官网调整',
+  account_suspended: '账号已被停用，请联系客服',
+  content_policy_violation: '内容被安全策略拦截，请调整后重试',
+  endpoint_unsupported: '该接口不受支持',
+  image_model_requires_intent: '所选模型仅支持绘图，请切换到文本模型',
+  no_channels: '所有模型节点暂时不可用，请稍后再试',
+  unauthorized: 'API Key 无效，请重新登录或检查密钥',
+};
+
+const NON_RETRYABLE_CODES = Object.keys(ERROR_CODE_HINTS).join('|');
+const NON_RETRYABLE_PATTERN = new RegExp(`"code"\\s*:\\s*"(${NON_RETRYABLE_CODES})"`, 'i');
+
 // HTTP 状态码 → 友好提示
 const STATUS_HINTS: Record<number, string> = {
   400: '请求格式错误',
@@ -45,17 +63,26 @@ const STATUS_HINTS: Record<number, string> = {
 function friendlyError(status: number, rawText: string): string {
   const hint = STATUS_HINTS[status];
   let detail = '';
+  let code = '';
   const trimmed = rawText?.trim() || '';
   if (trimmed) {
-    // 尝试解析 JSON 错误（OpenAI 兼容格式：{ error: { message: "..." } }）
+    // 尝试解析 JSON 错误（OpenAI 兼容格式：{ error: { message: "...", code: "..." } }）
     try {
       const obj = JSON.parse(trimmed);
       detail = obj?.error?.message || obj?.message || obj?.error || '';
+      code = obj?.error?.code || obj?.code || '';
     } catch {
       // 非 JSON，剥离 HTML 后取前 80 字符
       const plain = stripHtml(trimmed);
       detail = plain.length > 80 ? plain.slice(0, 80) + '...' : plain;
     }
+  }
+  // 业务错误码优先：配额/余额/冻结这类错误需要给用户明确动作指引
+  const codeHint = typeof code === 'string' ? ERROR_CODE_HINTS[code] : '';
+  if (codeHint) {
+    // 配额错误附带重置时间，方便用户判断何时可再用
+    if (code === 'daily_quota_exceeded' && detail && !/额度|配额/.test(detail)) return `${codeHint}（${detail}）`;
+    return codeHint;
   }
   if (hint && detail) return `${hint}（${detail}）`;
   if (hint) return hint;
@@ -74,11 +101,33 @@ function safeParse(raw: string | null, fallback: any): any {
 const TRANSIENT_PATTERN = /并发量较大|并发|繁忙|排队|拥挤|请.*秒后重试|稍后重试|rate limit|overload|too many requests|temporarily unavailable/i;
 
 function isTransientError(status: number, rawText: string): boolean {
+  // 业务错误（配额用完/余额不足/密钥冻结/IP 拒绝等）重试也必然失败，直接上抛
+  if (NON_RETRYABLE_PATTERN.test(rawText || '')) return false;
+  // 网关已做跨厂商故障转移，402/403/400 类也不该重试
+  if (status === 400 || status === 401 || status === 402 || status === 403 || status === 404) return false;
   if (status === 408 || status === 425 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504) return true;
   return TRANSIENT_PATTERN.test(rawText || '');
 }
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// 每日配额（官方调用指南 §8）：成功响应带 X-Daily-Limit / X-Daily-Remaining / X-Daily-Reset，
+// 落本地后由设置页展示剩余次数，用户无需去官网就能看到额度
+const DAILY_QUOTA_KEY = 'daily_quota';
+async function persistDailyQuota(headers: Headers) {
+  try {
+    const limit = headers.get('X-Daily-Limit');
+    const remaining = headers.get('X-Daily-Remaining');
+    const reset = headers.get('X-Daily-Reset');
+    if (limit == null && remaining == null) return;
+    await AsyncStorage.setItem(DAILY_QUOTA_KEY, JSON.stringify({
+      limit: limit != null ? Number(limit) : null,
+      remaining: remaining != null ? Number(remaining) : null,
+      reset: reset != null ? Number(reset) : null,
+      updatedAt: Date.now(),
+    }));
+  } catch { /* 配额写入失败不影响主流程 */ }
+}
 
 // 构造用户消息内容：支持纯文本 / 文本+图片 / 文本+音频 / 文本+图片+音频
 function buildUserContent(args: any): any {
@@ -389,6 +438,11 @@ export const api = {
     await AsyncStorage.setItem('local_usage_stats', JSON.stringify(stats));
   },
 
+  // 读取最近一次响应头带回的每日配额快照
+  async loadDailyQuota() {
+    return safeParse(await AsyncStorage.getItem(DAILY_QUOTA_KEY), null);
+  },
+
   async fetchModels(endpoint: string, apiKey?: string) {
     const base = normalizeEndpoint(endpoint);
     const controller = new AbortController();
@@ -424,6 +478,7 @@ export const api = {
       const errText = await response.text();
       throw new Error(friendlyError(response.status, errText));
     }
+    persistDailyQuota(response.headers);
     return response.json();
   },
 
@@ -440,7 +495,8 @@ export const api = {
       messages: sanitizeMessages(JSON.parse(args.history || "[]")).concat([buildUserContent(args)]),
     });
 
-    const MAX_ATTEMPTS = 3;
+    // 官方指南 §12.3：网关已做跨厂商故障转移，客户端只需重试 1 次、退避 4 秒
+    const MAX_ATTEMPTS = 2;
 
     // 调试日志：仅首轮打印，验证多模态结构是否正确
     if (args.__debugLog !== false) {
@@ -481,7 +537,7 @@ export const api = {
 
       if (!response) {
         if (attempt < MAX_ATTEMPTS && !signal?.aborted) {
-          await delay(6000 * attempt);
+          await delay(4000);
           continue;
         }
         throw new Error(lastError || '网络连接失败');
@@ -492,11 +548,14 @@ export const api = {
         const msg = friendlyError(response.status, errText);
         // 上游繁忙：静默重试，绝不把「并发量较大」抛给用户
         if (isTransientError(response.status, errText) && attempt < MAX_ATTEMPTS && !signal?.aborted) {
-          await delay(6000 * attempt);
+          await delay(4000);
           continue;
         }
         throw new Error(msg);
       }
+
+      // 成功响应携带每日配额头，落本地供设置页展示
+      persistDailyQuota(response.headers);
 
       // @ts-ignore
       const reader: ReadableStreamDefaultReader<Uint8Array> = response.body.getReader();
@@ -569,7 +628,7 @@ export const api = {
       }
 
       if (retryable && attempt < MAX_ATTEMPTS && !signal?.aborted) {
-        await delay(6000 * attempt);
+        await delay(4000);
         continue;
       }
       if (retryable) throw new Error(lastError || 'AI 响应繁忙，请稍后重试');
@@ -580,17 +639,34 @@ export const api = {
     }
   },
 
-  // 图片生成（OpenAI 兼容 /v1/images/generations）
-  // 图片生成：网关不保证支持 /v1/images/generations，因此按「多通道 + 多模型」依次尝试：
-  // 通道 A：/v1/chat/completions + 原生出图模型（gemini-3.1-flash-image 等）—— 网关声明支持的主力
-  // 通道 B：/v1/images/generations + cogview-4（智谱）
-  // 任一通道成功即返回，全部失败才报错。用户看到的只有「生成中」。
+  // 图片生成（OpenAI 兼容网关，按官方指南 §7 的多通道策略）
+  // 通道 A：/v1/images/generations + cogview（$0.008~0.012/张，最省）
+  // 通道 B：/v1/chat/completions + 原生生图模型（自动补画图意图词，避免被降级为文本）
+  // 通道 C：/v1/images/generations + 生图模型（部分网关版本支持，最后兜底）
+  // 任一通道成功即返回，全部失败才报错；用户看到的只有「生成中」。
   async generateImage(args: any): Promise<{ urls: string[]; error?: string }> {
     const authHeader = args.token
       ? (args.token.startsWith('Bearer ') ? args.token : `Bearer ${args.token}`)
       : '';
     const base = normalizeEndpoint(args.endpoint || 'https://gate.127110.xyz');
     const quantity = Math.max(1, Math.min(4, Number(args.n) || 1));
+    const rawPrompt = String(args.prompt || '').trim();
+    const wantSize = String(args.size || '1024x1024');
+    // 对话端点的生图模型必须有画图意图词，否则网关会降级成文本回答（指南 §7）
+    const INTENT_RE = /(画|绘制|生成图|出图|海报|头像|插画|draw|paint|generate image|image generation)/i;
+    const intentPrompt = INTENT_RE.test(rawPrompt) ? rawPrompt : `请生成图片：${rawPrompt}`;
+
+    // 单次生图请求限时：网关单次尝试 24/14 秒、全局 65 秒（指南 §1），
+    // 客户端留 65 秒上限，避免某个模型无响应时整条链路卡死
+    const fetchWithTimeout = async (url: string, init: any, ms = 65000) => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), ms);
+      try {
+        return await fetch(url, { ...init, signal: ctrl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
 
     // 从任意响应对象中抽取图片：兼容 markdown / images[] / b64_json / data[]
     const extractUrls = (json: any): string[] => {
@@ -633,8 +709,7 @@ export const api = {
       return Array.from(new Set(out)).filter(u => /^(https?:|data:image)/.test(u));
     };
 
-    // 通道 A：原生出图模型走 chat/completions（逐个模型尝试）
-    // 模型清单动态取自网关 /v1/models，避免硬编码失效；稳定版优先于 preview
+    // 生图模型清单动态取自网关 /v1/models，避免硬编码失效；稳定版优先于 preview
     let chatModels: string[] = args.chatModels || [];
     if (chatModels.length === 0) {
       try {
@@ -656,14 +731,61 @@ export const api = {
       chatModels = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-3-pro-image'];
     }
     let lastErr = '';
-    for (const model of chatModels) {
+
+    // 通道 A：标准文生图端点，便宜的 cogview 优先（$0.008/张 vs gemini $0.045/张）
+    // 该端点不需要意图词，提示词原样提交
+    const drawModels: string[] = args.drawModels || ['cogview-3-flash', 'cogview-4'];
+    for (const model of drawModels) {
       try {
-        const response = await fetch(`${base}/v1/chat/completions`, {
+        const response = await fetchWithTimeout(`${base}/v1/images/generations`, {
           method: 'POST',
           headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model,
-            messages: [{ role: 'user', content: args.prompt }],
+            prompt: rawPrompt,
+            n: quantity,
+            size: wantSize,
+          }),
+        });
+        if (!response.ok) {
+          const errText = await response.text();
+          lastErr = friendlyError(response.status, errText);
+          // 尺寸不被该模型接受时，用通用尺寸再试一次（不重复换模型）
+          if (response.status === 400 && wantSize !== '1024x1024') {
+            const retry = await fetchWithTimeout(`${base}/v1/images/generations`, {
+              method: 'POST',
+              headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model, prompt: rawPrompt, n: quantity, size: '1024x1024' }),
+            });
+            if (retry.ok) {
+              persistDailyQuota(retry.headers);
+              const json = await retry.json();
+              const urls = extractUrls(json);
+              if (urls.length > 0) return { urls: urls.slice(0, quantity) };
+            }
+          }
+          if (isTransientError(response.status, errText)) await delay(4000);
+          continue;
+        }
+        persistDailyQuota(response.headers);
+        const json = await response.json();
+        const urls = extractUrls(json);
+        if (urls.length > 0) return { urls: urls.slice(0, quantity) };
+        lastErr = '模型未返回图片';
+      } catch (e: any) {
+        lastErr = e?.message || '网络异常';
+      }
+    }
+
+    // 通道 B：对话端点 + 原生出图模型（网关主力通道，但必须有画图意图词）
+    for (const model of chatModels) {
+      try {
+        const response = await fetchWithTimeout(`${base}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: intentPrompt }],
             stream: false,
           }),
         });
@@ -677,6 +799,7 @@ export const api = {
           }
           continue;
         }
+        persistDailyQuota(response.headers);
         const json = await response.json();
         const urls = extractUrls(json);
         if (urls.length > 0) return { urls: urls.slice(0, quantity) };
@@ -686,30 +809,23 @@ export const api = {
       }
     }
 
-    // 通道 B：标准 images/generations（cogview 系列）
-    const drawModels: string[] = args.drawModels || ['cogview-4', 'cogview-3-flash'];
-    for (const model of drawModels) {
+    // 通道 C：把 gemini 生图模型也走标准端点（部分网关版本支持，仅作最后兜底）
+    for (const model of chatModels) {
       try {
-        const response = await fetch(`${base}/v1/images/generations`, {
+        const response = await fetchWithTimeout(`${base}/v1/images/generations`, {
           method: 'POST',
           headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model,
-            prompt: args.prompt,
-            n: quantity,
-            size: args.size || '1024x1024',
-          }),
+          body: JSON.stringify({ model, prompt: rawPrompt, n: quantity, size: wantSize }),
         });
         if (!response.ok) {
           const errText = await response.text();
           lastErr = friendlyError(response.status, errText);
-          if (isTransientError(response.status, errText)) await delay(4000);
           continue;
         }
+        persistDailyQuota(response.headers);
         const json = await response.json();
         const urls = extractUrls(json);
         if (urls.length > 0) return { urls: urls.slice(0, quantity) };
-        lastErr = '模型未返回图片';
       } catch (e: any) {
         lastErr = e?.message || '网络异常';
       }
@@ -718,3 +834,4 @@ export const api = {
     return { urls: [], error: lastErr || '当前渠道暂不支持图片生成' };
   },
 };
+

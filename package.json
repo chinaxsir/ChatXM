@@ -54,7 +54,9 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "version:bump": "node ./scripts/bump-version.js",
+    "release": "npm run version:bump && git add app.json && git commit -m \"chore(release): bump app version\" && git push"
   },
   "private": true
 }

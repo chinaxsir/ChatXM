@@ -128,7 +128,7 @@ export default function LoginScreen({ onLoginSuccess }: { onLoginSuccess?: () =>
         api_keys: apiKeys,
         api_key_meta: tokenMeta,
         primary_api_key: apiKeys[0] || '',
-        current_model: 'frapi',
+        current_model: 'gemini',
       };
 
       await api.saveConfig(finalConfig);

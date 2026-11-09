@@ -68,6 +68,8 @@ export default function SettingsScreen() {
   const [testMsg, setTestMsg] = useState('');
   const [testModels, setTestModels] = useState<string[]>([]);
   const [legalKind, setLegalKind] = useState<LegalKind | null>(null);
+  // 每日配额快照（来自对话响应头 X-Daily-*，由 api 层落本地）
+  const [dailyQuota, setDailyQuota] = useState<any>(null);
   const router = useRouter();
 
   // 即时预览清洗后的 endpoint
@@ -87,6 +89,9 @@ export default function SettingsScreen() {
         }
         if (!active) return;
         setConfig(c);
+        // 读取最近一次请求带回的每日配额快照
+        const q = await api.loadDailyQuota();
+        if (active) setDailyQuota(q);
         if (c?.session_token) {
           try {
             const r = await api.refreshAccount(c.session_token);
@@ -130,6 +135,17 @@ export default function SettingsScreen() {
   const today = new Date().toISOString().slice(0, 10);
   const todayUsage = config?.usage?.daily?.[today];
 
+  // 每日配额：剩余百分比 + 重置时间（Unix 秒 → 本地时间，便于用户判断何时恢复）
+  const quotaLimit = Number(dailyQuota?.limit) || 0;
+  const quotaRemaining = Number(dailyQuota?.remaining) || 0;
+  const quotaPct = quotaLimit > 0 ? Math.max(0, Math.min(100, Math.round((quotaRemaining / quotaLimit) * 100))) : 0;
+  const fmtReset = (sec: number) => {
+    const d = new Date(Number(sec) * 1000);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const hasQuota = quotaLimit > 0;
+
   if (!config?.session_token) {
     return (
       <View style={[styles.container, styles.center, { backgroundColor: C.bg }]}>
@@ -141,7 +157,7 @@ export default function SettingsScreen() {
     );
   }
 
-  // 切换当前对话使用的官方 API Key（所有 key 共用同一个 frapi 智能模型池）
+  // 切换当前对话使用的官方 API Key（所有 key 共用同一个 gemini 智能模型池）
   const switchPrimaryKey = async (key: string) => {
     if (!config || key === config.primary_api_key) return;
     const updated = { ...config, primary_api_key: key };
@@ -301,7 +317,7 @@ export default function SettingsScreen() {
       const cur = String(newConfig.current_model || '');
       if (cur.startsWith(`tp:${editingIdx}:`)) {
         const curModel = cur.split(':').slice(2).join(':');
-        if (!merged.includes(curModel)) finalConfig = { ...newConfig, current_model: 'frapi' };
+        if (!merged.includes(curModel)) finalConfig = { ...newConfig, current_model: 'gemini' };
       }
     }
     await api.saveConfig(finalConfig);
@@ -323,7 +339,7 @@ export default function SettingsScreen() {
       const newApis = (config.third_party_apis || []).filter((_: any, i: number) => i !== idx);
       let newConfig: any = { ...config, third_party_apis: newApis };
       if ((newConfig.current_model || '').startsWith(`tp:${idx}:`)) {
-        newConfig = { ...newConfig, current_model: 'frapi' };
+        newConfig = { ...newConfig, current_model: 'gemini' };
       }
       api.saveConfig(newConfig);
       setConfig(newConfig);
@@ -405,6 +421,27 @@ export default function SettingsScreen() {
         <ThemedText style={[styles.hint, styles.drawUsageNote, { color: C.sub }]}>
           图文均计入消耗：绘图按每张 1500 tokens 等效估算
         </ThemedText>
+
+        {/* 每日请求额度（来自响应头 X-Daily-*，口径见官方指南 §8） */}
+        {hasQuota && (
+          <View style={{ marginTop: 12 }}>
+            <View style={styles.quotaHead}>
+              <ThemedText style={[styles.hint, { color: C.sub }]}>📅 今日请求额度</ThemedText>
+              <ThemedText style={[styles.quotaValue, { color: quotaPct <= 15 ? C.danger : C.accent }]}>
+                {quotaRemaining} / {quotaLimit} 次
+              </ThemedText>
+            </View>
+            <View style={[styles.quotaTrack, { backgroundColor: scheme === 'dark' ? C.border : C.btnBg }]}>
+              <View style={[styles.quotaFill, { backgroundColor: quotaPct <= 15 ? C.danger : C.accent, width: `${quotaPct}%` }]} />
+            </View>
+
+            {!!dailyQuota?.reset && (
+              <ThemedText style={[styles.hint, { color: C.sub, marginTop: 4 }]}>
+                额度将于 {fmtReset(dailyQuota.reset)} 重置（太平洋时间午夜）
+              </ThemedText>
+            )}
+          </View>
+        )}
 
         {/* 用量明细：近 7 日消耗趋势 */}
         <View style={{ marginTop: 14 }}>
@@ -870,6 +907,10 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   hint: { fontSize: 12 },
   drawUsageNote: { textAlign: 'center', marginTop: 10 },
+  quotaHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  quotaValue: { fontSize: 12, fontWeight: '700' },
+  quotaTrack: { height: 6, borderRadius: 3, overflow: 'hidden' },
+  quotaFill: { height: 6, borderRadius: 3 },
   emptyCard: { alignItems: 'center', paddingVertical: 20 },
   apiItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, gap: 10 },
   apiDot: { width: 8, height: 8, borderRadius: 4, alignSelf: 'flex-start', marginTop: 6 },

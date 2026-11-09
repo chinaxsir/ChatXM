@@ -2,7 +2,7 @@
   "expo": {
     "name": "Chat X",
     "slug": "ChatXM",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "chatxm",
@@ -15,7 +15,8 @@
         "NSPhotoLibraryUsageDescription": "需要访问相册选择图片",
         "NSMicrophoneUsageDescription": "需要使用麦克风录制语音消息",
         "NSSpeechRecognitionUsageDescription": "需要使用语音识别将语音转为文字"
-      }
+      },
+      "buildNumber": "1"
     },
     "android": {
       "package": "com.xsircn.chatxm",
@@ -25,7 +26,8 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "versionCode": 1
     },
     "web": {
       "output": "static",

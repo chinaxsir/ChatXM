@@ -25,7 +25,9 @@ class Boundary extends React.Component<
   }
 }
 
-export function MarkdownSafe({ content, style, textStyle }: {
+// React.memo：流式输出期间只有正在写入的那条消息 content 会变化，
+// 其余历史消息 props 不变则直接跳过渲染，避免全量 Markdown 重解析发热
+function MarkdownSafeBase({ content, style, textStyle }: {
   content: any;
   style: any;
   textStyle: any;
@@ -39,3 +41,7 @@ export function MarkdownSafe({ content, style, textStyle }: {
     </Boundary>
   );
 }
+
+export const MarkdownSafe = React.memo(MarkdownSafeBase, (prev, next) =>
+  prev.content === next.content && prev.style === next.style && prev.textStyle === next.textStyle
+);

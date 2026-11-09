@@ -166,6 +166,29 @@ const palettes = {
 export default function ChatScreen() {
   const { scheme } = useThemeMode();
   const C = palettes[scheme === 'dark' ? 'dark' : 'light'];
+  // Markdown 样式表：用 useMemo 保持引用稳定，配合 MarkdownSafe 的 React.memo
+  // 才能真正跳过未变化消息的重渲染（否则 inline 对象每次 render 都是新引用）
+  const mdStyle = React.useMemo(() => ({
+    body: { color: C.aiText, fontSize: 15, lineHeight: 21 },
+    code_inline: { backgroundColor: C.inputBg, color: C.aiText, paddingHorizontal: 4, borderRadius: 4, fontSize: 13 },
+    code_block: { backgroundColor: C.inputBg, color: C.aiText, padding: 10, borderRadius: 8, fontSize: 13 },
+    fence: { backgroundColor: C.inputBg, color: C.aiText, padding: 10, borderRadius: 8 },
+    paragraph: { marginVertical: 4 },
+    heading1: { color: C.aiText, fontSize: 20, fontWeight: '700', marginVertical: 6 },
+    heading2: { color: C.aiText, fontSize: 17, fontWeight: '700', marginVertical: 5 },
+    heading3: { color: C.aiText, fontSize: 15, fontWeight: '600', marginVertical: 4 },
+    list: { marginVertical: 4 },
+    bullet_list: { marginVertical: 4 },
+    ordered_list: { marginVertical: 4 },
+    list_item: { color: C.aiText, marginVertical: 2 },
+    blockquote: { borderLeftWidth: 3, borderLeftColor: C.accent, paddingLeft: 10, color: C.sub, marginVertical: 4 },
+    link: { color: C.accent },
+    hr: { backgroundColor: C.border, height: 1, marginVertical: 8 },
+    table: { borderWidth: 1, borderColor: C.border, marginVertical: 6 },
+    th: { backgroundColor: C.inputBg, color: C.aiText, padding: 6, fontWeight: '600' },
+    td: { color: C.aiText, padding: 6, borderTopWidth: 1, borderTopColor: C.border },
+  }), [C.aiText, C.inputBg, C.border, C.accent, C.sub]);
+  const mdTextStyle = React.useMemo(() => [styles.msgText, { color: C.aiText }], [C.aiText]);
   const [config, setConfig] = useState<any>(null);
   // configRef 始终指向最新配置：模型自动同步、余额扣费等异步任务写回时
   // 以此为基准展开，避免彼此用旧快照覆盖对方刚写入的字段（如 current_model/balance）
@@ -284,8 +307,11 @@ export default function ChatScreen() {
     return () => loops.forEach(l => l.stop());
   }, [recording, waveAnims]);
 
-  // 卸载时清理语音计时器
-  useEffect(() => () => { if (voiceTimerRef.current) clearInterval(voiceTimerRef.current); }, []);
+  // 卸载时清理语音计时器与流式 flush 定时器，避免后台残留占用
+  useEffect(() => () => {
+    if (voiceTimerRef.current) clearInterval(voiceTimerRef.current);
+    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
+  }, []);
 
   // 绘图面板打开期间监听键盘高度（iOS 需要 willShow 才有动画同步感，Android 只有 didShow 可靠）
   useEffect(() => {
@@ -294,11 +320,18 @@ export default function ChatScreen() {
     const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
     // 用 endCoordinates.screenY 换算遮挡高度：键盘隐藏时终帧在屏幕外，
     // 直接读 height 会误判；winH - screenY 对停靠/浮动键盘都成立
+    let rafId: number | null = null;
     const applyKbFrame = (e: any) => {
-      const end = e?.endCoordinates;
-      if (!end) return;
-      const winH = Dimensions.get('window').height;
-      setDrawKbHeight(end.screenY < winH ? Math.max(0, winH - end.screenY) : 0);
+      // keyboardWillChangeFrame 在键盘动画期间会以 60fps 触发，
+      // 用 requestAnimationFrame 合并到下一帧，避免一帧内多次 setState 造成发热
+      if (rafId != null) return;
+      rafId = (globalThis as any).requestAnimationFrame(() => {
+        rafId = null;
+        const end = e?.endCoordinates;
+        if (!end) return;
+        const winH = Dimensions.get('window').height;
+        setDrawKbHeight(end.screenY < winH ? Math.max(0, winH - end.screenY) : 0);
+      });
     };
     const s1 = Keyboard.addListener(showEvt, applyKbFrame);
     const s2 = Keyboard.addListener('keyboardDidShow', applyKbFrame);
@@ -306,8 +339,11 @@ export default function ChatScreen() {
     const s3 = Platform.OS === 'ios'
       ? Keyboard.addListener('keyboardWillChangeFrame', applyKbFrame)
       : null;
-    const h1 = Keyboard.addListener(hideEvt, () => setDrawKbHeight(0));
-    return () => { s1.remove(); s2.remove(); s3?.remove(); h1.remove(); };
+    const h1 = Keyboard.addListener(hideEvt, () => { setDrawKbHeight(0); });
+    return () => {
+      s1.remove(); s2.remove(); s3?.remove(); h1.remove();
+      if (rafId != null) { (globalThis as any).cancelAnimationFrame(rafId); rafId = null; }
+    };
   }, [showDrawPanel]);
 
   // 面板上推量：优先用键盘事件实测高度；事件未下发时（极端情况）
@@ -568,7 +604,8 @@ export default function ChatScreen() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    // 节流 flush：累积文本后每 50ms 更新一次 UI，避免高频 setState
+    // 节流 flush：累积文本后每 120ms 更新一次 UI，避免高频 setState + Markdown 重解析导致发热。
+    // 120ms 仍保持逐字流畅感，但 CPU 占用约为 50ms 时的 40%。
     const flush = () => {
       setMessages(prev => {
         const idx = prev.length - 1;
@@ -583,7 +620,7 @@ export default function ChatScreen() {
       flushTimerRef.current = setTimeout(() => {
         flushTimerRef.current = null;
         flush();
-      }, 50);
+      }, 120);
     };
 
     try {
@@ -1216,27 +1253,8 @@ export default function ChatScreen() {
                   item.role === 'assistant' ? (
                     <MarkdownSafe
                       content={item.content}
-                      textStyle={[styles.msgText, { color: C.aiText }]}
-                      style={{
-                        body: { color: C.aiText, fontSize: 15, lineHeight: 21 },
-                        code_inline: { backgroundColor: C.inputBg, color: C.aiText, paddingHorizontal: 4, borderRadius: 4, fontSize: 13 },
-                        code_block: { backgroundColor: C.inputBg, color: C.aiText, padding: 10, borderRadius: 8, fontSize: 13 },
-                        fence: { backgroundColor: C.inputBg, color: C.aiText, padding: 10, borderRadius: 8 },
-                        paragraph: { marginVertical: 4 },
-                        heading1: { color: C.aiText, fontSize: 20, fontWeight: '700', marginVertical: 6 },
-                        heading2: { color: C.aiText, fontSize: 17, fontWeight: '700', marginVertical: 5 },
-                        heading3: { color: C.aiText, fontSize: 15, fontWeight: '600', marginVertical: 4 },
-                        list: { marginVertical: 4 },
-                        bullet_list: { marginVertical: 4 },
-                        ordered_list: { marginVertical: 4 },
-                        list_item: { color: C.aiText, marginVertical: 2 },
-                        blockquote: { borderLeftWidth: 3, borderLeftColor: C.accent, paddingLeft: 10, color: C.sub, marginVertical: 4 },
-                        link: { color: C.accent },
-                        hr: { backgroundColor: C.border, height: 1, marginVertical: 8 },
-                        table: { borderWidth: 1, borderColor: C.border, marginVertical: 6 },
-                        th: { backgroundColor: C.inputBg, color: C.aiText, padding: 6, fontWeight: '600' },
-                        td: { color: C.aiText, padding: 6, borderTopWidth: 1, borderTopColor: C.border },
-                      }}
+                      textStyle={mdTextStyle}
+                      style={mdStyle}
                     />
                   ) : (
                     <ThemedText style={[styles.msgText, { color: '#FFFFFF' }]}>
